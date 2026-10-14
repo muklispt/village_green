@@ -37,3 +37,7 @@ htmlcov/
 build/
 dist/
 *.egg-info/
+
+# skill
+.agents/
+.skill-lock.json

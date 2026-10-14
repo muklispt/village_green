@@ -21,6 +21,8 @@ except ImportError:
 
 load_dotenv()
 
+from datetime import timedelta
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -34,10 +36,20 @@ SECRET_KEY = os.getenv('SECRET_KEY')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv('DEBUG')
 
-ALLOWED_HOSTS = []
 
+ALLOWED_HOSTS = ['localhost',"127.0.0.1",]
+CORS_ALLOWED_ORIGINS = ["http://localhost:5173"]
 
+# frontend url
+FRONTEND_URL = os.getenv('FRONTEND_URL')
 
+PASSWORD_RESET_TIMEOUT = 1800 
+
+AUTH_USER_MODEL = "account.User"
+
+# google clint id config
+GOOGLE_CLIENT_ID = os.getenv('GOOGLE_CLIENT_ID')
+GOOGLE_CLINT_ID = GOOGLE_CLIENT_ID
 
 
 # Application definition
@@ -50,8 +62,44 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'rest_framework',
+    'rest_framework_simplejwt.token_blacklist',
+    'corsheaders',
     'account',
+    'product',
 ]
+
+# simple jwt and permmision config 
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": (
+        "rest_framework_simplejwt.authentication.JWTAuthentication",
+    ),
+
+        "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.IsAuthenticated",
+    ],
+        "DEFAULT_THROTTLE_CLASSES": [
+        "rest_framework.throttling.ScopedRateThrottle",
+    ],
+    "DEFAULT_THROTTLE_RATES": {
+        "resend-otp": "3/minute",
+    },
+}
+
+SIMPLE_JWT = {
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=15),
+
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
+
+    "ROTATE_REFRESH_TOKENS": True,
+
+    "BLACKLIST_AFTER_ROTATION": True,
+
+    "UPDATE_LAST_LOGIN": True,
+
+    "ALGORITHM": "HS256",
+
+    "AUTH_HEADER_TYPES": ("Bearer",),
+}
 
 MIDDLEWARE = [
     
@@ -62,9 +110,25 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'corsheaders.middleware.CorsMiddleware',
 ]
 
 ROOT_URLCONF = 'config.urls'
+
+# Email
+# https://docs.djangoproject.com/en/6.1/topics/email/#topic-email-configuration
+MAILERS = {
+    "default": {
+        "BACKEND": "django.core.mail.backends.smtp.EmailBackend",
+        "OPTIONS": {
+            "host": "smtp.gmail.com",
+            "port": 587,
+            "use_tls": True,
+            "username": os.getenv("EMAIL_HOST_USER"),
+            "password": os.getenv("EMAIL_HOST_PASSWORD"),
+        },
+    },
+}
 
 TEMPLATES = [
     {
@@ -92,7 +156,7 @@ DATABASES = {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': os.getenv('DB_NAME'),
         'USER': os.getenv('DB_USER'),
-        'PASSWORD': os.getenv('DB_PASSWORD'),
+        'PASSWORD':os.getenv('DB_password'),
         'HOST': os.getenv('DB_HOST'),
         'PORT': os.getenv('DB_PORT'),
     }
@@ -114,7 +178,10 @@ AUTH_PASSWORD_VALIDATORS = [
     },
     {
         'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
-    },
+
+    },{
+        'NAME':'account.validators.CustomPasswordValidator'
+    }
 ]
 
 
@@ -135,12 +202,43 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 
+MEDIA_URL = '/media/'
+MEDIA_ROOT = BASE_DIR / 'media'
 
-# Email
-# https://docs.djangoproject.com/en/6.1/topics/email/#topic-email-configuration
+DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-MAILERS = {
-    'default': {
-        'BACKEND': 'django.core.mail.backends.console.EmailBackend',
+
+
+
+
+# ---------------------------------------------------------------------------
+# Logging — captures email errors and general Django warnings
+# ---------------------------------------------------------------------------
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "verbose": {
+            "format": "[{asctime}] {levelname} {name}: {message}",
+            "style": "{",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "verbose",
+        },
+    },
+    "loggers": {
+        "django": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": True,
+        },
+        "users": {
+            "handlers": ["console"],
+            "level": "DEBUG",
+            "propagate": False,
+        },
     },
 }
