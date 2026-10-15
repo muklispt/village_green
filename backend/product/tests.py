@@ -24,6 +24,19 @@ class ProductCategoryTestCase(TestCase):
         self.assertEqual(category.slug,'organic-fruits')
         self.assertEqual(category.description,'Fresh organic fruits')
 
+    def test_custom_slug_ignored_in_create(self):
+        serializer = ProductCategorySerializer(
+            data={
+                'name': 'Exotic Fruits',
+                'slug': 'custom-slug-override',
+                'description': 'Fresh exotic fruits',
+            }
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        category = serializer.save()
+        self.assertEqual(category.name, 'Exotic Fruits')
+        self.assertEqual(category.slug, 'exotic-fruits')
+
 
 class ProductVariantSerializerTestCase(TestCase):
 

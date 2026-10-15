@@ -17,6 +17,9 @@ class ProductCategorySerializer(serializers.ModelSerializer):
             'updated_at'
         )
         read_only_fields=('id','created_at','updated_at')
+        extra_kwargs = {
+            'slug': {'required': False}
+        }
 
     def validate_name(self,value):
         value = value.strip()
