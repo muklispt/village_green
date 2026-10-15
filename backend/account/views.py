@@ -44,7 +44,7 @@ class VerifyOTPView(APIView):
         otp_obj.save(update_fields=['is_used'])
 
         return Response(
-            {'message':'Email verified successfully'},status=status.HTTP_201_CREATED
+            {'message':'Email verified successfully'},status=status.HTTP_200_OK
         )
 
 class LoginView(APIView):
@@ -62,7 +62,7 @@ class LoginView(APIView):
             'message':'Login successfuly',
             "access": str(refresh.access_token),
             "refresh": str(refresh),
-        },status=status.HTTP_201_CREATED)
+        },status=status.HTTP_200_OK)
 
 
 class UserView(generics.RetrieveAPIView):
@@ -83,7 +83,7 @@ class ForgetPasswordView(APIView):
         user = User.objects.filter(email__iexact=serializers.validated_data['email'],is_active=True).first()
         if user:
             send_reset_password_mail(user)
-        return Response(self.GENERIC_RESPONSE,status=status.HTTP_201_CREATED)
+        return Response(self.GENERIC_RESPONSE,status=status.HTTP_200_OK)
 
 class ResetPasswordView(APIView):
     permission_classes=[AllowAny]
