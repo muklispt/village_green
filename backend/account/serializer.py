@@ -13,6 +13,7 @@ from datetime import timedelta
 from django.utils import timezone
 
 from .utils import OTP_COOLDOWN_SECONDS
+from .otp import verify_otp
 
 class _CleanFieldsMixin:
     def validate_full_name(self, value):
@@ -91,11 +92,9 @@ class VerifyOTPSerializer(serializers.Serializer):
 
     otp = serializers.CharField(min_length=6,max_length=6)
 
-    def validate_otp(sef,value):
-
+    def validate_otp(self, value):
         if not value.isdigit():
             raise serializers.ValidationError('OTP must contain only numbers')
-
         return value
 
     def validate(self, attrs):
@@ -106,28 +105,10 @@ class VerifyOTPSerializer(serializers.Serializer):
             user = User.objects.get(email=email)
         except User.DoesNotExist:
             raise serializers.ValidationError({
-                'email':'Invalid verification request.'
+                'email': 'Invalid verification request.'
             })
 
-        try:
-            otp_obj = EmailOtp.objects.get(
-                user=user,
-                is_used = False
-            )
-        except EmailOtp.DoesNotExist:
-            raise serializers.ValidationError({
-                'otp':'Invalid or expired OTP.'
-            })
-
-        if otp_obj.is_expired:
-            raise serializers.ValidationError({
-               'otp':"OTP has expired."
-            })
-
-        if otp_obj.otp !=otp:
-            raise serializers.ValidationError({
-                'otp':"Invalid OTP."
-            })
+        otp_obj = verify_otp(user, otp)
 
         attrs['user'] = user
         attrs['otp_obj'] = otp_obj

@@ -12,33 +12,14 @@ from django.contrib.auth.tokens import default_token_generator
 
 logger = logging.getLogger(__name__)
 
-# OTP lifetime in minutes
-OTP_EXPIRY_MINUTES = 5
-
-# Minimum seconds between consecutive OTP sends for the same user
-OTP_COOLDOWN_SECONDS = 60
-
-_sys_random = random.SystemRandom()
-def generateOtp():
-    return str(_sys_random.randint(100000, 999999))
+from .otp import OTP_EXPIRY_MINUTES, OTP_COOLDOWN_SECONDS, create_otp
 
 def _uid_for(user):
     return urlsafe_base64_encode(force_bytes(user.pk))
 
 def send_otp_email(email):
-    otp = generateOtp()
-    
-    user =  User.objects.get(email=email)
-   
-        
-
-    EmailOtp.objects.filter(user=user,is_used=False).update(is_used=True)
-    otp_record=EmailOtp.objects.create(
-        user = user,
-        otp=otp,
-        expir_at = timezone.now()+timedelta(minutes=OTP_EXPIRY_MINUTES)
-        
-    )
+    user = User.objects.get(email=email)
+    otp_record, otp = create_otp(user)
 
     html_message = f"""
     <!DOCTYPE html>

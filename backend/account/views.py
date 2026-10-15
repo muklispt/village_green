@@ -4,6 +4,7 @@ from .models import User,EmailOtp
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from . utils import send_otp_email,send_reset_password_mail,send_welcom_email
+from .otp import mark_otp_used
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.views import status
 from rest_framework.permissions import AllowAny,IsAuthenticated
@@ -42,8 +43,7 @@ class VerifyOTPView(APIView):
         user.is_active=True
         user.save(update_fields=["is_active"])
 
-        otp_obj.is_used = True
-        otp_obj.save(update_fields=['is_used'])
+        mark_otp_used(otp_obj)
 
         return Response(
             {'message':'Email verified successfully'},status=status.HTTP_200_OK
