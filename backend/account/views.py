@@ -14,7 +14,8 @@ from rest_framework.throttling import ScopedRateThrottle
 # Create your views here.
 
 class RegisterView(APIView):
-    permission_classes =[AllowAny]
+    permission_classes = [AllowAny]
+    throttle_scope = 'register'
     def post(self,request):
         serializers = serializer.RegisterSerializer(data=request.data)
 
@@ -29,7 +30,8 @@ class RegisterView(APIView):
         return Response(serializers.errors,status=status.HTTP_400_BAD_REQUEST)
 
 class VerifyOTPView(APIView):
-    permission_classes =[AllowAny]
+    permission_classes = [AllowAny]
+    throttle_scope = 'verify-otp'
     def post(self,request):
         serializers = serializer.VerifyOTPSerializer(data=request.data)
 
@@ -49,6 +51,7 @@ class VerifyOTPView(APIView):
 
 class LoginView(APIView):
     permission_classes = [AllowAny]
+    throttle_scope = 'login'
 
     def post(self,request):
         serializers = serializer.LoginSerializer(data=request.data,context={'request':request})
@@ -74,7 +77,8 @@ class UserView(generics.RetrieveAPIView):
         return self.request.user
 
 class ForgetPasswordView(APIView):
-    permission_classes=[AllowAny]
+    permission_classes = [AllowAny]
+    throttle_scope = 'forgot-password'
     GENERIC_RESPONSE = {"detail": "If that email is registered, a reset link has been sent."}
 
     def post(self,request):
@@ -86,7 +90,8 @@ class ForgetPasswordView(APIView):
         return Response(self.GENERIC_RESPONSE,status=status.HTTP_200_OK)
 
 class ResetPasswordView(APIView):
-    permission_classes=[AllowAny]
+    permission_classes = [AllowAny]
+    throttle_scope = 'reset-password'
 
     def post(self,request):
         serializers = serializer.ResetPasswordSerializer(data=request.data)
@@ -120,6 +125,7 @@ class ChangePasswordView(generics.CreateAPIView):
      
 class GoogleLoginView(APIView):
     permission_classes = [AllowAny]
+    throttle_scope = 'google-login'
 
     def post(self, request):
         serializers = serializer.GoogleLoginSerializer(data=request.data, context={'request': request})
