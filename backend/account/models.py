@@ -89,10 +89,11 @@ class User(AbstractBaseUser,PermissionsMixin):
 
 class EmailOtp(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.CASCADE,related_name='otp')
-    otp = models.CharField(max_length=6)
+    otp = models.CharField(max_length=128)
     created_at = models.DateTimeField(auto_now_add=True)
     expir_at = models.DateTimeField()
     is_used = models.BooleanField(default=False)
+    failed_attempts = models.PositiveSmallIntegerField(default=0)
 
     class Meta:
         verbose_name = "Email OTP"
