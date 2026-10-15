@@ -1,4 +1,3 @@
-from django.shortcuts import render
 from . import serializer 
 from rest_framework import generics
 from .models import User,EmailOtp

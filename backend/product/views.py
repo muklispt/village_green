@@ -1,4 +1,3 @@
-from django.shortcuts import render
 from . models import ProductCategory,Product,ProductVariant
 from rest_framework.viewsets import ModelViewSet
 from . permissions import IsAdminOrReadOnly
