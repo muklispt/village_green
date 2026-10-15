@@ -1,6 +1,7 @@
 from rest_framework import serializers
-from .models import ProductCategory,Product
+from .models import ProductCategory,Product,ProductVariant
 from django.utils.text import slugify
+from  rest_framework.validators import  UniqueTogetherValidator
 
 
 
@@ -46,7 +47,7 @@ class ProductCategorySerializer(serializers.ModelSerializer):
 
 class ProductSerializer(serializers.ModelSerializer):
     category_name = serializers.CharField(
-        source ='category.name',
+        source='product_category.name',
         read_only=True
     )
 
@@ -85,7 +86,7 @@ class ProductSerializer(serializers.ModelSerializer):
     def validate_price(self,value):
         if value<0:
             raise serializers.ValidationError(
-                'Pirce cannot be negative.'
+                'Price cannot be negative.'
             )
         return value
 
@@ -115,4 +116,52 @@ class ProductSerializer(serializers.ModelSerializer):
         validated_data['slug'] = slug
         return super().create(validated_data)
 
+class ProductVariantSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProductVariant
+        fields =(
+            'id',
+            'product',
+            'sku',
+            'quantity',
+            'unit',
+            'price',
+            'mrp',
+            'stock_quantity',
+            'is_active'
+        )
+        read_only_fields=('id',)
+
+        validators = [
+            UniqueTogetherValidator(
+                queryset=ProductVariant.objects.all(),
+                fields=('product','quantity','unit'),
+                message='A variant with this product, quantity and unit alredy exists.'
+            )
+        ]
+
+    def validate_price(self,value):
+        if value<0:
+            raise serializers.ValidationError('Selling price cannot be nagative')
+        return value
+
+    def validate_mrp(self,value):
+        if value<0:
+            raise serializers.ValidationError('MRP cannot be nagative.')
+        return value
+
+    def validate_quantity(self,value):
+        if value<=0:
+            raise serializers.ValidationError('Quantity must be greater than zero.')
+        return value
+
+    def validate(self, attrs):
+        price = attrs.get('price',getattr(self.instance,'price',None))
+        mrp = attrs.get('mrp',getattr(self.instance,'mrp',None))
+
+        if price is not None and mrp is not None and price>mrp:
+            raise serializers.ValidationError({
+                'price':'Selling prince cannot be greater then MRP.'
+            })
+        return attrs
     

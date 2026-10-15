@@ -294,41 +294,7 @@ describe("Product & Category Service & Storefront Contracts", () => {
     assert.equal(formatPriceHelper(null, "piece"), "₹0.00 / piece");
   });
 
-  test("DRF Product response normalization handles results and count structures", () => {
-    const drfResponse = {
-      count: 3,
-      next: null,
-      previous: null,
-      results: [
-        {
-          id: "e1d3dfa9-9282-4cf3-acbc-3862fb828565",
-          product_category: "79a296ce-5436-4354-b655-ba3cb95a192a",
-          name: "Indian Pears - Fresh",
-          price: "255.00",
-          stock_quantity: 5,
-          unit: "kg",
-        },
-      ],
-    };
 
-    const categoriesMap = {
-      "79a296ce-5436-4354-b655-ba3cb95a192a": { name: "Organic Fruits" },
-    };
-
-    const normalize = (res) => {
-      const list = res.results || [];
-      return list.map((item) => ({
-        ...item,
-        category_name: categoriesMap[item.product_category]?.name || "Fresh Produce",
-        price_num: parseFloat(item.price) || 0,
-      }));
-    };
-
-    const normalized = normalize(drfResponse);
-    assert.equal(normalized.length, 1);
-    assert.equal(normalized[0].category_name, "Organic Fruits");
-    assert.equal(normalized[0].price_num, 255.0);
-  });
 });
 
 describe("Shopping Basket Calculations & Stock Boundary Logic", () => {

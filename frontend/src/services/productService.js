@@ -49,35 +49,17 @@ export function formatPrice(price, unit = "kg") {
   return `₹${num.toFixed(2)} / ${unit}`;
 }
 
-// In-memory cache for categories to enrich product category names
-let categoryCache = null;
-
 /**
  * Fetch all categories from backend
  * @returns {Promise<Array>}
  */
 export async function getCategories() {
   try {
-    let response;
-    try {
-      response = await api.get("/productcategories/");
-    } catch (firstErr) {
-      if (firstErr.response?.status === 404) {
-        response = await api.get("/categories/");
-      } else {
-        throw firstErr;
-      }
-    }
+    const response = await api.get("/product/categories/");
 
     const data = Array.isArray(response.data)
       ? response.data
       : response.data?.results || [];
-
-    // Cache categories map
-    categoryCache = data.reduce((acc, cat) => {
-      acc[cat.id] = cat;
-      return acc;
-    }, {});
 
     return data;
   } catch (error) {
@@ -107,17 +89,11 @@ export async function getProducts({ search = "", page = 1, pageSize, categoryId 
     if (pageSize) {
       params.page_size = pageSize;
     }
-
-    let response;
-    try {
-      response = await api.get("/productproducts/", { params });
-    } catch (firstErr) {
-      if (firstErr.response?.status === 404) {
-        response = await api.get("/products/", { params });
-      } else {
-        throw firstErr;
-      }
+    if (categoryId && categoryId.trim()) {
+      params.category = categoryId.trim();
     }
+
+    const response = await api.get("/product/products/", { params });
 
     let rawResults = [];
     let count = 0;
@@ -134,30 +110,14 @@ export async function getProducts({ search = "", page = 1, pageSize, categoryId 
       previous = response.data.previous || null;
     }
 
-    // Enrich products with category_name if missing and cache exists
-    let enriched = rawResults.map((prod) => {
-      let catName = prod.category_name;
-      if (!catName && categoryCache && prod.product_category) {
-        catName = categoryCache[prod.product_category]?.name;
-      }
-      return {
-        ...prod,
-        category_name: catName || "Fresh Produce",
-        price_num: parseFloat(prod.price) || 0,
-      };
-    });
-
-    // If client specified a specific categoryId, apply client-side filter if backend didn't filter it
-    if (categoryId) {
-      enriched = enriched.filter(
-        (p) =>
-          p.product_category === categoryId ||
-          p.product_category?.id === categoryId
-      );
-    }
+    const enriched = rawResults.map((prod) => ({
+      ...prod,
+      category_name: prod.category_name || "",
+      price_num: parseFloat(prod.price) || 0,
+    }));
 
     return {
-      count: categoryId ? enriched.length : count,
+      count,
       next,
       previous,
       results: enriched,
@@ -175,26 +135,12 @@ export async function getProducts({ search = "", page = 1, pageSize, categoryId 
  */
 export async function getProductById(id) {
   try {
-    let response;
-    try {
-      response = await api.get(`/productproducts/${id}/`);
-    } catch (firstErr) {
-      if (firstErr.response?.status === 404) {
-        response = await api.get(`/products/${id}/`);
-      } else {
-        throw firstErr;
-      }
-    }
-
+    const response = await api.get(`/product/products/${id}/`);
     const prod = response.data;
-    let catName = prod.category_name;
-    if (!catName && categoryCache && prod.product_category) {
-      catName = categoryCache[prod.product_category]?.name;
-    }
 
     return {
       ...prod,
-      category_name: catName || "Fresh Produce",
+      category_name: prod.category_name || "",
       price_num: parseFloat(prod.price) || 0,
     };
   } catch (error) {

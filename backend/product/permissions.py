@@ -7,7 +7,4 @@ class IsAdminOrReadOnly(BasePermission):
             return True
 
         user  = request.user
-        return (user.is_authenticated
-                and user.is_active
-                and user.is_staff
-                )
+        return (user.is_authenticated and user.is_active and user.is_staff)
