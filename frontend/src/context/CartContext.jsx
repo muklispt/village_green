@@ -32,12 +32,25 @@ export function CartProvider({ children }) {
     }, 3200);
   }, []);
 
-  const addToCart = useCallback((product, quantity = 1) => {
+  const addToCart = useCallback((product, quantity = 1, variant = null) => {
     if (!product || !product.id) return;
-    const maxStock = typeof product.stock_quantity === "number" ? product.stock_quantity : 99;
+
+    const maxStock =
+      typeof variant?.stock_quantity === "number"
+        ? variant.stock_quantity
+        : typeof product.stock_quantity === "number"
+        ? product.stock_quantity
+        : 99;
+
+    // Prevent adding out-of-stock items
+    if (maxStock <= 0) return;
+
+    const lineItemId = variant?.id ? `${product.id}_${variant.id}` : product.id;
 
     setCartItems((prevItems) => {
-      const existingIndex = prevItems.findIndex((item) => item.product.id === product.id);
+      const existingIndex = prevItems.findIndex(
+        (item) => (item.id || item.product?.id) === lineItemId
+      );
 
       if (existingIndex > -1) {
         const existingItem = prevItems[existingIndex];
@@ -45,26 +58,47 @@ export function CartProvider({ children }) {
         const updated = [...prevItems];
         updated[existingIndex] = {
           ...existingItem,
+          id: lineItemId,
+          variant: variant || existingItem.variant || null,
           quantity: newQuantity,
         };
         return updated;
       } else {
         const initialQuantity = Math.min(Math.max(1, quantity), maxStock);
-        return [...prevItems, { product, quantity: initialQuantity }];
+        return [
+          ...prevItems,
+          {
+            id: lineItemId,
+            product,
+            variant: variant || null,
+            quantity: initialQuantity,
+          },
+        ];
       }
     });
 
-    showToast(`Added ${quantity} × "${product.name}" to your basket`);
+    const variantLabel = variant
+      ? ` (${parseFloat(variant.quantity) || variant.quantity} ${variant.unit || ""})`
+      : "";
+    showToast(`Added ${quantity} × "${product.name}${variantLabel}" to your basket`);
   }, [showToast]);
 
-  const updateQuantity = useCallback((productId, quantity) => {
+  const updateQuantity = useCallback((cartItemId, quantity) => {
     setCartItems((prevItems) => {
       if (quantity <= 0) {
-        return prevItems.filter((item) => item.product.id !== productId);
+        return prevItems.filter(
+          (item) => (item.id || item.product?.id) !== cartItemId
+        );
       }
       return prevItems.map((item) => {
-        if (item.product.id === productId) {
-          const maxStock = typeof item.product.stock_quantity === "number" ? item.product.stock_quantity : 99;
+        const currentId = item.id || item.product?.id;
+        if (currentId === cartItemId) {
+          const maxStock =
+            typeof item.variant?.stock_quantity === "number"
+              ? item.variant.stock_quantity
+              : typeof item.product?.stock_quantity === "number"
+              ? item.product.stock_quantity
+              : 99;
           return {
             ...item,
             quantity: Math.min(quantity, maxStock),
@@ -75,8 +109,10 @@ export function CartProvider({ children }) {
     });
   }, []);
 
-  const removeFromCart = useCallback((productId) => {
-    setCartItems((prevItems) => prevItems.filter((item) => item.product.id !== productId));
+  const removeFromCart = useCallback((cartItemId) => {
+    setCartItems((prevItems) =>
+      prevItems.filter((item) => (item.id || item.product?.id) !== cartItemId)
+    );
   }, []);
 
   const clearCart = useCallback(() => {
@@ -89,7 +125,9 @@ export function CartProvider({ children }) {
 
   const subtotal = useMemo(() => {
     return cartItems.reduce((sum, item) => {
-      const price = parseFloat(item.product?.price) || 0;
+      const price = item.variant?.price
+        ? parseFloat(item.variant.price)
+        : parseFloat(item.product?.price) || 0;
       return sum + price * (item.quantity || 0);
     }, 0);
   }, [cartItems]);
@@ -123,6 +161,7 @@ export function CartProvider({ children }) {
   return <CartContext.Provider value={value}>{children}</CartContext.Provider>;
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export default function useCart() {
   const context = useContext(CartContext);
   if (!context) {

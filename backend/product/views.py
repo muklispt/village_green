@@ -1,10 +1,12 @@
-from . models import ProductCategory,Product,ProductVariant
+from . models import ProductCategory,Product,ProductVariant,ProductImage,ProductVideo
 from rest_framework.viewsets import ModelViewSet
 from . permissions import IsAdminOrReadOnly
-from . serializers import (ProductCategorySerializer,ProductSerializer,ProductVariantSerializer)
+from . serializers import (ProductCategorySerializer,ProductSerializer,ProductVariantSerializer,
+                           ProductImageSerializer,ProductVideoSerializer)
 from .pagination import ProductPagination
 from rest_framework.filters import SearchFilter
 from rest_framework.exceptions import  ValidationError
+from rest_framework.permissions import IsAdminUser
 import uuid
 
 
@@ -61,7 +63,7 @@ class  ProductVariantViewSet(ModelViewSet):
         if not (self.request.user.is_authenticated and self.request.user.is_staff):
             queryset = queryset.filter(is_active=True,product__is_active=True)
 
-        product_id = self.request.query_parmas.get('product')
+        product_id = self.request.query_params.get('product')
         if product_id:
             try:
                 product_id= uuid.UUID(product_id)
@@ -70,4 +72,12 @@ class  ProductVariantViewSet(ModelViewSet):
             queryset = queryset.filter(product_id=product_id)
         return queryset
 
+class ProductImagViewSet(ModelViewSet):
+    queryset = ProductImage.objects.select_related('product').all()
+    serializer_class = ProductImageSerializer
+    permission_classes = [IsAdminOrReadOnly]
 
+class ProductVideoViewSet(ModelViewSet):
+    queryset = ProductVideo.objects.select_related('product').all()
+    serializer_class = ProductVideoSerializer
+    permission_classes = [IsAdminOrReadOnly]

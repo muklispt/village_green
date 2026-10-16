@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react";
-import { useParams, Link, useNavigate } from "react-router-dom";
+import { useState, useEffect, useMemo } from "react";
+import { useParams, Link } from "react-router-dom";
 import {
   ShoppingBag,
   Check,
@@ -10,8 +10,9 @@ import {
   AlertCircle,
   ArrowLeft,
   Share2,
-  Heart,
   Award,
+  Play,
+  Film,
 } from "lucide-react";
 import Navbar from "../../components/layout/Navbar";
 import Footer from "../../components/layout/Footer";
@@ -20,15 +21,17 @@ import QuantitySelector from "../../components/common/QuantitySelector";
 import ProductCard from "../../components/product/ProductCard";
 import useCart from "../../context/CartContext";
 import {
-  getProductById,
+  getProductDetailsComplete,
   getProducts,
   resolveImageUrl,
+  resolveMediaUrl,
   formatPrice,
+  formatVariantLabel,
+  calculateDiscount,
 } from "../../services/productService";
 
 export default function ProductDetailsPage() {
   const { id } = useParams();
-  const navigate = useNavigate();
   const { addToCart, setIsCartOpen } = useCart();
 
   const [product, setProduct] = useState(null);
@@ -38,6 +41,13 @@ export default function ProductDetailsPage() {
   const [error, setError] = useState(null);
   const [copiedLink, setCopiedLink] = useState(false);
 
+  // Active media selection: selected image & media mode ('image' | 'video')
+  const [selectedImage, setSelectedImage] = useState(null);
+  const [mediaMode, setMediaMode] = useState("image");
+
+  // Selected package variant
+  const [selectedVariant, setSelectedVariant] = useState(null);
+
   useEffect(() => {
     let isMounted = true;
     async function loadProduct() {
@@ -45,10 +55,31 @@ export default function ProductDetailsPage() {
         setLoading(true);
         setError(null);
         setQuantity(1);
+        setMediaMode("image");
 
-        const prod = await getProductById(id);
+        const prod = await getProductDetailsComplete(id);
         if (!isMounted) return;
         setProduct(prod);
+
+        // Determine default active image: primary image first, else first image, else product_img
+        if (prod.images && prod.images.length > 0) {
+          const primary = prod.images.find((img) => img.is_primary);
+          setSelectedImage(primary ? primary.image : prod.images[0].image);
+        } else if (prod.product_img) {
+          setSelectedImage(prod.product_img);
+        } else {
+          setSelectedImage(null);
+        }
+
+        // Determine default variant if variants exist
+        if (prod.variants && prod.variants.length > 0) {
+          const inStockVariant = prod.variants.find(
+            (v) => (v.stock_quantity || 0) > 0 && v.is_active !== false
+          );
+          setSelectedVariant(inStockVariant || prod.variants[0]);
+        } else {
+          setSelectedVariant(null);
+        }
 
         // Fetch related products from same category or general harvest
         try {
@@ -64,6 +95,7 @@ export default function ProductDetailsPage() {
         }
       } catch (err) {
         if (isMounted) {
+          console.error("Error loading product detail:", err);
           setError("Product could not be found or has been deactivated.");
         }
       } finally {
@@ -80,6 +112,54 @@ export default function ProductDetailsPage() {
       isMounted = false;
     };
   }, [id]);
+
+  // Handle variant change
+  const handleVariantSelect = (variant) => {
+    setSelectedVariant(variant);
+    const maxForVariant =
+      typeof variant?.stock_quantity === "number" ? variant.stock_quantity : 99;
+    if (quantity > maxForVariant) {
+      setQuantity(Math.max(1, maxForVariant));
+    }
+  };
+
+  // Build the complete list of gallery images
+  const galleryImages = useMemo(() => {
+    if (!product) return [];
+    const list = [];
+    const seenUrls = new Set();
+
+    if (Array.isArray(product.images) && product.images.length > 0) {
+      product.images.forEach((imgObj) => {
+        const url = imgObj.image;
+        if (url && !seenUrls.has(url)) {
+          seenUrls.add(url);
+          list.push({
+            id: imgObj.id,
+            url,
+            is_primary: Boolean(imgObj.is_primary),
+          });
+        }
+      });
+    }
+
+    // Include the base product image if not already in gallery
+    if (product.product_img && !seenUrls.has(product.product_img)) {
+      list.unshift({
+        id: "base-product-img",
+        url: product.product_img,
+        is_primary: list.length === 0,
+      });
+    }
+
+    return list;
+  }, [product]);
+
+  // Video URL resolution
+  const videoUrl = useMemo(() => {
+    if (!product?.video?.video) return null;
+    return resolveMediaUrl(product.video.video);
+  }, [product]);
 
   if (loading) {
     return (
@@ -133,20 +213,39 @@ export default function ProductDetailsPage() {
     );
   }
 
-  const inStock = (product.stock_quantity || 0) > 0;
-  const maxStock = product.stock_quantity || 1;
-  const unitPrice = parseFloat(product.price) || 0;
-  const subtotal = (unitPrice * quantity).toFixed(2);
-  const imageUrl = resolveImageUrl(product.product_img);
+  // Stock, price, MRP, and discount calculations
+  const inStock = selectedVariant
+    ? (selectedVariant.stock_quantity || 0) > 0 && selectedVariant.is_active !== false
+    : (product.stock_quantity || 0) > 0;
+
+  const currentStockQuantity = selectedVariant
+    ? selectedVariant.stock_quantity
+    : product.stock_quantity;
+
+  const maxStock = Math.max(1, currentStockQuantity || 1);
+
+  const displayPrice = selectedVariant
+    ? parseFloat(selectedVariant.price) || 0
+    : parseFloat(product.price) || 0;
+
+  const displayMrp = selectedVariant?.mrp ? parseFloat(selectedVariant.mrp) : null;
+  const discountPercent = calculateDiscount(displayPrice, displayMrp);
+
+  const displayUnit = selectedVariant
+    ? formatVariantLabel(selectedVariant)
+    : product.unit || "unit";
+
+  const subtotal = (displayPrice * quantity).toFixed(2);
+  const activeImageUrl = resolveImageUrl(selectedImage || product.product_img);
 
   const handleAddToCart = () => {
     if (!inStock) return;
-    addToCart(product, quantity);
+    addToCart(product, quantity, selectedVariant);
   };
 
   const handleBuyNow = () => {
     if (!inStock) return;
-    addToCart(product, quantity);
+    addToCart(product, quantity, selectedVariant);
     setIsCartOpen(true);
   };
 
@@ -180,32 +279,115 @@ export default function ProductDetailsPage() {
 
           {/* Product Overview Section */}
           <section className="gv-details-grid">
-            {/* Left: Product Gallery / Image */}
+            {/* Left: Product Gallery / Image / Video */}
             <div className="gv-details-gallery">
               <div className="gv-details-main-img-box">
-                <img
-                  src={imageUrl}
-                  alt={product.name}
-                  className="gv-details-main-img"
-                  onError={(e) => {
-                    e.target.onerror = null;
-                    e.target.src =
-                      "https://images.unsplash.com/photo-1610832958506-aa56368176cf?auto=format&fit=crop&w=800&q=80";
-                  }}
-                />
-                {inStock ? (
-                  <span className="gv-details-badge-organic">
-                    <ShieldCheck size={14} /> 100% Certified Organic
-                  </span>
+                {mediaMode === "video" && videoUrl ? (
+                  <div className="gv-details-video-wrapper">
+                    <video
+                      controls
+                      playsInline
+                      preload="metadata"
+                      className="gv-details-video-player"
+                      poster={activeImageUrl}
+                      title={product.video?.title || `${product.name} Promotional Video`}
+                    >
+                      <source src={videoUrl} type="video/mp4" />
+                      Your browser does not support HTML5 video playback.
+                    </video>
+                    <button
+                      type="button"
+                      className="gv-details-video-close-btn"
+                      onClick={() => setMediaMode("image")}
+                      title="Back to product photos"
+                      aria-label="Back to product photos"
+                    >
+                      Back to Photos
+                    </button>
+                  </div>
                 ) : (
-                  <span className="gv-badge-soldout">Sold Out</span>
+                  <>
+                    <img
+                      src={activeImageUrl}
+                      alt={product.name}
+                      className="gv-details-main-img"
+                      onError={(e) => {
+                        e.target.onerror = null;
+                        e.target.src =
+                          "https://images.unsplash.com/photo-1610832958506-aa56368176cf?auto=format&fit=crop&w=800&q=80";
+                      }}
+                    />
+                    {inStock ? (
+                      <span className="gv-details-badge-organic">
+                        <ShieldCheck size={14} /> 100% Certified Organic
+                      </span>
+                    ) : (
+                      <span className="gv-badge-soldout">Sold Out</span>
+                    )}
+                  </>
                 )}
               </div>
+
+              {/* Thumbnails Row (Multiple Images + Promotional Video) */}
+              {(galleryImages.length > 1 || videoUrl) && (
+                <div
+                  className="gv-details-thumbnails-strip"
+                  role="tablist"
+                  aria-label="Product media previews"
+                >
+                  {galleryImages.map((imgItem) => {
+                    const resolvedThumbUrl = resolveImageUrl(imgItem.url);
+                    const isActive =
+                      mediaMode === "image" &&
+                      (selectedImage === imgItem.url ||
+                        (!selectedImage && imgItem.is_primary));
+
+                    return (
+                      <button
+                        key={imgItem.id || imgItem.url}
+                        type="button"
+                        className={`gv-details-thumbnail-btn ${isActive ? "is-active" : ""}`}
+                        onClick={() => {
+                          setSelectedImage(imgItem.url);
+                          setMediaMode("image");
+                        }}
+                        aria-label={`View photo ${imgItem.is_primary ? "(Primary)" : ""}`}
+                        aria-selected={isActive}
+                      >
+                        <img
+                          src={resolvedThumbUrl}
+                          alt={`${product.name} preview`}
+                          className="gv-details-thumbnail-img"
+                        />
+                      </button>
+                    );
+                  })}
+
+                  {/* Promotional Video Thumbnail */}
+                  {videoUrl && (
+                    <button
+                      type="button"
+                      className={`gv-details-thumbnail-btn gv-details-video-thumb-btn ${
+                        mediaMode === "video" ? "is-active" : ""
+                      }`}
+                      onClick={() => setMediaMode("video")}
+                      aria-label="Play promotional video"
+                      aria-selected={mediaMode === "video"}
+                      title={product.video?.title || "Watch promotional video"}
+                    >
+                      <div className="gv-video-thumb-inner">
+                        <Play size={18} fill="currentColor" />
+                        <span>Video</span>
+                      </div>
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Right: Product Details & Purchase Actions */}
             <div className="gv-details-info">
-              {/* Category & Status */}
+              {/* Category & Stock Status */}
               <div className="gv-details-meta-row">
                 <span className="gv-details-category-pill">
                   {product.category_name || "Fresh Orchard"}
@@ -219,7 +401,9 @@ export default function ProductDetailsPage() {
                   {inStock ? (
                     <>
                       <Check size={14} />
-                      <span>In Stock ({product.stock_quantity} {product.unit || "units"} available)</span>
+                      <span>
+                        In Stock ({currentStockQuantity} {displayUnit} available)
+                      </span>
                     </>
                   ) : (
                     <>
@@ -233,17 +417,111 @@ export default function ProductDetailsPage() {
               {/* Product Title */}
               <h1 className="gv-details-title">{product.name}</h1>
 
-              {/* Price Block */}
+              {/* SKU Tag if available */}
+              {selectedVariant?.sku && (
+                <div className="gv-details-sku-row">
+                  <span className="gv-details-sku-badge">
+                    SKU: <strong>{selectedVariant.sku}</strong>
+                  </span>
+                </div>
+              )}
+
+              {/* Price & MRP Block */}
               <div className="gv-details-price-box">
                 <div className="gv-details-price-main">
-                  <span className="gv-details-price-value">
-                    {formatPrice(product.price, product.unit)}
-                  </span>
+                  <div className="gv-details-price-line">
+                    <span className="gv-details-price-value">
+                      {formatPrice(displayPrice, displayUnit)}
+                    </span>
+                    {displayMrp && displayMrp > displayPrice && (
+                      <span className="gv-details-mrp-block">
+                        <span className="gv-details-mrp-label">MRP</span>
+                        <span className="gv-details-mrp-value">
+                          ₹{displayMrp.toFixed(2)}
+                        </span>
+                      </span>
+                    )}
+                    {discountPercent > 0 && (
+                      <span className="gv-details-discount-pill">
+                        {discountPercent}% OFF
+                      </span>
+                    )}
+                  </div>
                   <span className="gv-details-price-sub">
-                    Direct grower price • Zero middlemen
+                    Direct grower price • Zero middlemen • Fresh farm guarantee
                   </span>
                 </div>
               </div>
+
+              {/* Package Variants Selector */}
+              {product.variants && product.variants.length > 0 && (
+                <div className="gv-details-variants-section">
+                  <div className="gv-details-variants-header">
+                    <h3 className="gv-details-section-label">Available Package Sizes</h3>
+                    {selectedVariant && (
+                      <span className="gv-variant-selected-hint">
+                        Selected: <strong>{formatVariantLabel(selectedVariant)}</strong>
+                      </span>
+                    )}
+                  </div>
+
+                  <div
+                    className="gv-variants-grid"
+                    role="radiogroup"
+                    aria-label="Package sizes"
+                  >
+                    {product.variants.map((v) => {
+                      const isSelected = selectedVariant?.id === v.id;
+                      const isVariantInStock =
+                        (v.stock_quantity || 0) > 0 && v.is_active !== false;
+                      const variantLabel = formatVariantLabel(v);
+                      const variantPriceNum = parseFloat(v.price) || 0;
+                      const variantMrpNum = v.mrp ? parseFloat(v.mrp) : null;
+                      const vDiscount = calculateDiscount(variantPriceNum, variantMrpNum);
+
+                      return (
+                        <button
+                          key={v.id}
+                          type="button"
+                          role="radio"
+                          aria-checked={isSelected}
+                          disabled={!isVariantInStock}
+                          className={`gv-variant-chip ${isSelected ? "is-selected" : ""} ${
+                            !isVariantInStock ? "is-disabled" : ""
+                          }`}
+                          onClick={() => handleVariantSelect(v)}
+                          title={
+                            isVariantInStock
+                              ? `${variantLabel} - ₹${variantPriceNum.toFixed(2)}`
+                              : `${variantLabel} (Out of Stock)`
+                          }
+                        >
+                          <span className="gv-variant-chip-top">
+                            <span className="gv-variant-chip-label">{variantLabel}</span>
+                            {isSelected && <Check size={14} className="gv-variant-check" />}
+                          </span>
+
+                          <span className="gv-variant-chip-price">
+                            ₹{variantPriceNum.toFixed(2)}
+                          </span>
+
+                          {vDiscount > 0 && (
+                            <span className="gv-variant-chip-discount">
+                              {vDiscount}% OFF
+                            </span>
+                          )}
+
+                          {!isVariantInStock && (
+                            <span className="gv-variant-chip-stock-label">
+                              Out of stock
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
 
               {/* Description */}
               <div className="gv-details-desc-box">
@@ -254,11 +532,39 @@ export default function ProductDetailsPage() {
                 </p>
               </div>
 
+              {/* Promotional Video Notice Card (if video available and not yet playing) */}
+              {videoUrl && mediaMode !== "video" && (
+                <div className="gv-details-video-banner">
+                  <div className="gv-video-banner-info">
+                    <Film size={18} className="gv-video-banner-icon" />
+                    <div>
+                      <strong>Watch Farm Video</strong>
+                      <span>
+                        {product.video?.title ||
+                          "See the harvest grounds, grading process, and farm story"}
+                      </span>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="gv-btn-watch-video"
+                    onClick={() => {
+                      setMediaMode("video");
+                      window.scrollTo({ top: 120, behavior: "smooth" });
+                    }}
+                  >
+                    <Play size={14} fill="currentColor" /> Watch Video
+                  </button>
+                </div>
+              )}
+
               {/* Quantity Selector & Subtotal Calculation */}
               {inStock && (
                 <div className="gv-details-qty-block">
                   <div className="gv-qty-row">
-                    <label className="gv-details-qty-label">Quantity ({product.unit || "kg"}):</label>
+                    <label className="gv-details-qty-label">
+                      Quantity ({displayUnit}):
+                    </label>
                     <QuantitySelector
                       quantity={quantity}
                       max={maxStock}
@@ -367,3 +673,4 @@ export default function ProductDetailsPage() {
     </div>
   );
 }
+

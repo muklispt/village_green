@@ -1,4 +1,4 @@
-import api from "./api";
+import api from "./api.js";
 
 // Fallback high quality agricultural produce image for when a product image is missing
 export const DEFAULT_PRODUCT_IMAGE =
@@ -24,17 +24,56 @@ export function resolveImageUrl(imgPath, fallbackType = "default") {
     return CATEGORY_FALLBACK_IMAGES[fallbackType] || DEFAULT_PRODUCT_IMAGE;
   }
 
-  if (imgPath.startsWith("http://") || imgPath.startsWith("https://")) {
-    return imgPath;
-  }
-
-  // Prepend backend URL
   const backendBase =
     import.meta.env?.VITE_API_URL?.replace(/\/api\/v1\/?$/, "") ||
     "http://localhost:8000";
 
+  // Normalize localhost/127.0.0.1 media URLs if serialized without port
+  if (
+    imgPath.startsWith("http://localhost/media/") ||
+    imgPath.startsWith("http://127.0.0.1/media/")
+  ) {
+    const subPath = imgPath.replace(/^http:\/\/(localhost|127\.0\.0\.1)/, "");
+    return `${backendBase}${subPath}`;
+  }
+
+  if (imgPath.startsWith("http://") || imgPath.startsWith("https://")) {
+    return imgPath;
+  }
+
   const cleanPath = imgPath.startsWith("/") ? imgPath : `/${imgPath}`;
   return `${backendBase}${cleanPath}`;
+}
+
+/**
+ * Resolves any backend media asset (video, documents) to an absolute URL without fallback
+ * @param {string|null} mediaPath
+ * @returns {string|null}
+ */
+export function resolveMediaUrl(mediaPath) {
+  if (!mediaPath) return null;
+
+  const backendBase =
+    import.meta.env?.VITE_API_URL?.replace(/\/api\/v1\/?$/, "") ||
+    "http://localhost:8000";
+
+  // Normalize localhost/127.0.0.1 media URLs if serialized without port
+  if (
+    mediaPath.startsWith("http://localhost/media/") ||
+    mediaPath.startsWith("http://127.0.0.1/media/")
+  ) {
+    const subPath = mediaPath.replace(/^http:\/\/(localhost|127\.0\.0\.1)/, "");
+    return `${backendBase}${subPath}`;
+  }
+
+  // Absolute external or fully specified URLs
+  if (mediaPath.startsWith("http://") || mediaPath.startsWith("https://")) {
+    return mediaPath;
+  }
+
+  const cleanPath = mediaPath.startsWith("/") ? mediaPath : `/${mediaPath}`;
+  const finalPath = cleanPath.startsWith("/media/") ? cleanPath : `/media${cleanPath}`;
+  return `${backendBase}${finalPath}`;
 }
 
 /**
@@ -55,7 +94,9 @@ export function formatPrice(price, unit = "kg") {
  */
 export async function getCategories() {
   try {
-    const response = await api.get("/product/categories/");
+    const response = await api.get("/product/categories/", {
+      _skipAuthRedirect: true,
+    });
 
     const data = Array.isArray(response.data)
       ? response.data
@@ -93,7 +134,10 @@ export async function getProducts({ search = "", page = 1, pageSize, categoryId 
       params.category = categoryId.trim();
     }
 
-    const response = await api.get("/product/products/", { params });
+    const response = await api.get("/product/products/", {
+      params,
+      _skipAuthRedirect: true,
+    });
 
     let rawResults = [];
     let count = 0;
@@ -135,7 +179,9 @@ export async function getProducts({ search = "", page = 1, pageSize, categoryId 
  */
 export async function getProductById(id) {
   try {
-    const response = await api.get(`/product/products/${id}/`);
+    const response = await api.get(`/product/products/${id}/`, {
+      _skipAuthRedirect: true,
+    });
     const prod = response.data;
 
     return {
@@ -148,3 +194,151 @@ export async function getProductById(id) {
     throw error;
   }
 }
+
+/**
+ * Format variant package size label cleanly (e.g. "250 g", "1.5 kg")
+ * @param {Object} variant
+ * @returns {string}
+ */
+export function formatVariantLabel(variant) {
+  if (!variant) return "";
+  const qty = parseFloat(variant.quantity);
+  const formattedQty = isNaN(qty) ? variant.quantity : Number(qty.toFixed(3));
+  const unit = variant.unit || "";
+  return `${formattedQty} ${unit}`.trim();
+}
+
+/**
+ * Calculate percentage discount from selling price and MRP
+ * @param {number|string} price
+ * @param {number|string} mrp
+ * @returns {number} discount percentage rounded to nearest integer (0 if invalid)
+ */
+export function calculateDiscount(price, mrp) {
+  const p = parseFloat(price);
+  const m = parseFloat(mrp);
+  if (isNaN(p) || isNaN(m) || m <= 0 || p >= m) {
+    return 0;
+  }
+  return Math.round(((m - p) / m) * 100);
+}
+
+/**
+ * Fetch product images from backend
+ * @param {string} productId
+ * @returns {Promise<Array>}
+ */
+export async function getProductImages(productId) {
+  if (!productId) return [];
+  try {
+    const response = await api.get("/product/product-images/", {
+      params: { product: productId },
+      _skipAuthRedirect: true,
+    });
+
+    const raw = Array.isArray(response.data)
+      ? response.data
+      : response.data?.results || [];
+
+    // Filter to this product in case backend endpoint returns unfiltered set
+    const filtered = raw.filter((img) => String(img.product) === String(productId));
+
+    // Sort by sort_order ascending, primary image first
+    return filtered.sort((a, b) => {
+      if (a.is_primary && !b.is_primary) return -1;
+      if (!a.is_primary && b.is_primary) return 1;
+      return (a.sort_order || 0) - (b.sort_order || 0);
+    });
+  } catch (error) {
+    console.warn(`Could not load images for product ${productId}:`, error.message);
+    return [];
+  }
+}
+
+/**
+ * Fetch product promotional video from backend
+ * Note: Handled gracefully if video is unavailable or request fails
+ * @param {string} productId
+ * @returns {Promise<Object|null>}
+ */
+export async function getProductVideo(productId) {
+  if (!productId) return null;
+  try {
+    const response = await api.get("/product/product-videos/", {
+      params: { product: productId },
+      _skipAuthRedirect: true,
+    });
+
+    const raw = Array.isArray(response.data)
+      ? response.data
+      : response.data?.results || [];
+
+    const found = raw.find((v) => String(v.product) === String(productId));
+    return found || null;
+  } catch (error) {
+    // Gracefully handle any failure without disrupting page render
+    console.warn(`Could not load video for product ${productId}:`, error.message);
+    return null;
+  }
+}
+
+/**
+ * Fetch product variants from backend
+ * Note: Handled gracefully if backend endpoint fails
+ * @param {string} productId
+ * @returns {Promise<Array>}
+ */
+export async function getProductVariants(productId) {
+  if (!productId) return [];
+  try {
+    const response = await api.get("/product/variants/", {
+      params: { product: productId },
+      _skipAuthRedirect: true,
+    });
+
+    const raw = Array.isArray(response.data)
+      ? response.data
+      : response.data?.results || [];
+
+    const filtered = raw.filter((v) => String(v.product) === String(productId));
+
+    // Sort variants by quantity or price
+    return filtered.sort((a, b) => {
+      const pA = parseFloat(a.price) || 0;
+      const pB = parseFloat(b.price) || 0;
+      return pA - pB;
+    });
+  } catch (error) {
+    console.warn(`Could not load variants for product ${productId}:`, error.message);
+    return [];
+  }
+}
+
+/**
+ * Composite fetch for complete product details (product, images, video, variants)
+ * Uses Promise.allSettled to guarantee the product detail page always renders
+ * even if auxiliary endpoints fail or return permission errors.
+ * @param {string} id
+ * @returns {Promise<Object>}
+ */
+export async function getProductDetailsComplete(id) {
+  const prod = await getProductById(id);
+
+  const [imagesSettled, videoSettled, variantsSettled] = await Promise.allSettled([
+    getProductImages(id),
+    getProductVideo(id),
+    getProductVariants(id),
+  ]);
+
+  const images = imagesSettled.status === "fulfilled" ? imagesSettled.value : [];
+  const video = videoSettled.status === "fulfilled" ? videoSettled.value : null;
+  const variants = variantsSettled.status === "fulfilled" ? variantsSettled.value : [];
+
+  return {
+    ...prod,
+    images: images || [],
+    video: video || null,
+    variants: variants || [],
+  };
+}
+

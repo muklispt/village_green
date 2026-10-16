@@ -1,8 +1,9 @@
 from rest_framework import serializers
-from .models import ProductCategory,Product,ProductVariant
+from .models import (ProductCategory,Product,ProductVariant,
+                     ProductImage,ProductVideo)
 from django.utils.text import slugify
 from  rest_framework.validators import  UniqueTogetherValidator
-
+from pathlib import Path
 
 
 class ProductCategorySerializer(serializers.ModelSerializer):
@@ -167,4 +168,55 @@ class ProductVariantSerializer(serializers.ModelSerializer):
                 'price':'Selling prince cannot be greater then MRP.'
             })
         return attrs
+
+class ProductImageSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProductImage
+        fields = (
+            'id',
+            'product',
+            'image',
+            'is_primary',
+            'sort_order',
+            'created_at',
+        )
+        read_only_fields = ('id','created_at')
+
+    def validate_image(self,value):
+        allowed_types =['image/jpeg','image/png','image/webp']
+
+        if value.content_type not in allowed_types:
+            raise serializers.ValidationError('Only JPEG,PNG, and Webp images are allowed.')
+
+        max_size = 5 * 1024 * 1024
+
+        if value.size> max_size:
+            raise serializers.ValidationError('Image size must not exceed 5 MB.')
+        
+        return value
+
+class ProductVideoSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProductVideo
+        fields = (
+            'id',
+            'product',
+            'video',
+            'title',
+            'created_at'
+        )
+        read_only_fields =('id','created_at')
+
+    def validate_video(self,value):
+        allowed_extensions = {'.mp4','.webm','.mov'}
+        extension = Path(value.name).suffix.lower()
+
+        if extension not in allowed_extensions:
+            raise serializers.ValidationError('Only MP4,WebM,and MOV video files are allowed.')
+        max_size = 50 * 1024 * 1024 
+
+        if value.size>max_size:
+            raise serializers.ValidationError('Video size must not exceed 50 MB.')
+        
+        return value
     

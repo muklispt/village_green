@@ -22,6 +22,22 @@ const PUBLIC_ENDPOINTS = [
 ];
 
 /**
+ * Check if the given URL is a public storefront browsing endpoint
+ * @param {string} url
+ * @returns {boolean}
+ */
+export const isStorefrontEndpoint = (url) => {
+  if (!url) return false;
+  const cleanUrl = url.split("?")[0].split("#")[0];
+  return (
+    cleanUrl.startsWith("/product/") ||
+    cleanUrl.includes("/product/") ||
+    cleanUrl.startsWith("/categories/") ||
+    cleanUrl.includes("/categories/")
+  );
+};
+
+/**
  * Check if the given URL is a public endpoint
  * @param {string} url
  * @returns {boolean}
@@ -131,12 +147,18 @@ api.interceptors.response.use(
   async (error) => {
     const originalRequest = error.config;
 
-    // Reject immediately if error is not 401, or if request was to a public endpoint
+    // Reject immediately without redirecting if:
+    // - error status is not 401
+    // - request explicitly asks to skip auth redirect (_skipAuthRedirect)
+    // - request was to a public account endpoint
+    // - request was to a public storefront product/category endpoint
     if (
       !error.response ||
       error.response.status !== 401 ||
       !originalRequest ||
-      isPublicEndpoint(originalRequest.url)
+      originalRequest._skipAuthRedirect ||
+      isPublicEndpoint(originalRequest.url) ||
+      isStorefrontEndpoint(originalRequest.url)
     ) {
       return Promise.reject(error);
     }

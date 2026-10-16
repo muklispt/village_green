@@ -82,12 +82,22 @@ export default function CartDrawer() {
             <ul className="gv-cart-items-list">
               {cartItems.map((item) => {
                 const prod = item.product;
-                const unitPrice = parseFloat(prod.price) || 0;
+                const itemKey = item.id || prod.id;
+                const unitPrice = item.variant?.price
+                  ? parseFloat(item.variant.price)
+                  : parseFloat(prod.price) || 0;
                 const itemSubtotal = (unitPrice * item.quantity).toFixed(2);
                 const itemImg = resolveImageUrl(prod.product_img);
+                const maxStock =
+                  typeof item.variant?.stock_quantity === "number"
+                    ? item.variant.stock_quantity
+                    : prod.stock_quantity || 99;
+                const packageLabel = item.variant
+                  ? `${parseFloat(item.variant.quantity) || item.variant.quantity} ${item.variant.unit}`
+                  : null;
 
                 return (
-                  <li key={prod.id} className="gv-cart-item">
+                  <li key={itemKey} className="gv-cart-item">
                     <img
                       src={itemImg}
                       alt={prod.name}
@@ -106,7 +116,7 @@ export default function CartDrawer() {
                         <button
                           type="button"
                           className="gv-cart-item-remove"
-                          onClick={() => removeFromCart(prod.id)}
+                          onClick={() => removeFromCart(itemKey)}
                           aria-label={`Remove ${prod.name} from basket`}
                           title="Remove item"
                         >
@@ -114,16 +124,27 @@ export default function CartDrawer() {
                         </button>
                       </div>
 
+                      {packageLabel && (
+                        <div className="gv-cart-item-variant-tag">
+                          <span>Pack: <strong>{packageLabel}</strong></span>
+                          {item.variant.sku && (
+                            <span className="gv-cart-item-sku">SKU: {item.variant.sku}</span>
+                          )}
+                        </div>
+                      )}
+
                       <div className="gv-cart-item-unit-price">
-                        {formatPrice(prod.price, prod.unit)}
+                        {item.variant
+                          ? formatPrice(item.variant.price, packageLabel)
+                          : formatPrice(prod.price, prod.unit)}
                       </div>
 
                       <div className="gv-cart-item-actions">
                         <QuantitySelector
                           quantity={item.quantity}
-                          max={prod.stock_quantity || 99}
+                          max={maxStock}
                           min={1}
-                          onChange={(newQty) => updateQuantity(prod.id, newQty)}
+                          onChange={(newQty) => updateQuantity(itemKey, newQty)}
                         />
                         <span className="gv-cart-item-total">₹{itemSubtotal}</span>
                       </div>
