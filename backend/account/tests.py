@@ -192,3 +192,53 @@ class EmailOTPSecurityTestCase(APITestCase):
         self.assertIsNotNone(newest_otp)
         self.assertNotEqual(newest_otp.pk, self.otp_record.pk)
         self.assertEqual(newest_otp.failed_attempts, 0)
+
+
+class AdminLoginAPITestCase(APITestCase):
+    def setUp(self):
+        cache.clear()
+        self.admin_password = "AdminSecurePass123!"
+        self.admin = User.objects.create_superuser(
+            email="admin@example.com",
+            password=self.admin_password,
+            full_name="Green Village Admin",
+        )
+        self.customer_password = "CustomerSecurePass123!"
+        self.customer = User.objects.create_user(
+            email="customer@example.com",
+            password=self.customer_password,
+            full_name="Green Village Customer",
+            is_active=True,
+        )
+
+    def tearDown(self):
+        cache.clear()
+
+    def test_active_staff_can_login_and_receive_jwt(self):
+        response = self.client.post(
+            "/api/v1/account/admin-login/",
+            {"email": self.admin.email, "password": self.admin_password},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertIn("access", response.data)
+        self.assertIn("refresh", response.data)
+        self.assertTrue(response.data["user"]["is_staff"])
+
+    def test_customer_cannot_use_admin_login(self):
+        response = self.client.post(
+            "/api/v1/account/admin-login/",
+            {"email": self.customer.email, "password": self.customer_password},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertNotIn("access", response.data)
+
+    def test_wrong_admin_password_is_rejected(self):
+        response = self.client.post(
+            "/api/v1/account/admin-login/",
+            {"email": self.admin.email, "password": "WrongPassword123!"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertNotIn("access", response.data)
