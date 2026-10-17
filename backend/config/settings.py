@@ -90,6 +90,7 @@ REST_FRAMEWORK = {
         "resend-otp": "3/minute",
         "verify-otp": "10/minute",
         "login": "10/minute",
+        "admin-login": "5/minute",
         "register": "5/minute",
         "forgot-password": "5/minute",
         "reset-password": "5/minute",
