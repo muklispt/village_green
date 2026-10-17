@@ -622,4 +622,174 @@ class ProductImageAPITestCase(ProductAPIBase):
         self.client.force_authenticate(user=self.customer)
         res_cust = self.client.post('/api/v1/product/images/', {'product': str(self.product.id)})
         self.assertEqual(res_cust.status_code, status.HTTP_403_FORBIDDEN)
+
+
+class ProductVideoAPITestCase(ProductAPIBase):
+
+    def test_upload_video_mp4_and_webm(self):
+        self.client.force_authenticate(user=self.admin)
+
+        # Upload MP4
+        mp4_file = make_mp4('promo.mp4')
+        res_mp4 = self.client.post(
+            '/api/v1/product/videos/',
+            {'product': str(self.product.id), 'video': mp4_file, 'title': 'Turmeric Overview'},
+            format='multipart'
+        )
+        self.assertEqual(res_mp4.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res_mp4.data['title'], 'Turmeric Overview')
+        self.assertIn('.mp4', res_mp4.data['video'])
+
+        # Delete and upload WebM
+        with self.captureOnCommitCallbacks(execute=True):
+            self.client.delete(f"/api/v1/product/videos/{res_mp4.data['id']}/")
+
+        webm_file = make_webm('promo.webm')
+        res_webm = self.client.post(
+            '/api/v1/product/videos/',
+            {'product': str(self.product.id), 'video': webm_file, 'title': 'WebM Overview'},
+            format='multipart'
+        )
+        self.assertEqual(res_webm.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res_webm.data['title'], 'WebM Overview')
+        self.assertIn('.webm', res_webm.data['video'])
+
+    def test_duplicate_video_rejected(self):
+        self.client.force_authenticate(user=self.admin)
+        ProductVideo.objects.create(product=self.product, video=make_mp4(), title="Existing Video")
+
+        new_video = make_mp4('another.mp4')
+        response = self.client.post(
+            '/api/v1/product/videos/',
+            {'product': str(self.product.id), 'video': new_video},
+            format='multipart'
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('already has a promotional video', str(response.data))
+
+    def test_wrong_type_rejected(self):
+        self.client.force_authenticate(user=self.admin)
+        avi_file = SimpleUploadedFile('clip.avi', b'RIFF\x00\x00\x00\x00AVI ', content_type='video/avi')
+        response = self.client.post(
+            '/api/v1/product/videos/',
+            {'product': str(self.product.id), 'video': avi_file},
+            format='multipart'
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('Only MP4 and WebM', str(response.data))
+
+    def test_fake_file_with_mp4_extension_rejected(self):
+        self.client.force_authenticate(user=self.admin)
+        fake_mp4 = SimpleUploadedFile('fake.mp4', b'This is plain text content', content_type='video/mp4')
+        response = self.client.post(
+            '/api/v1/product/videos/',
+            {'product': str(self.product.id), 'video': fake_mp4},
+            format='multipart'
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('Invalid MP4 file', str(response.data))
+
+    def test_oversize_video_rejected(self):
+        self.client.force_authenticate(user=self.admin)
+        # Create a file whose size exceeds 50MB
+        header = b'\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00'
+        oversize_content = header + (b'0' * (50 * 1024 * 1024 + 16))
+        oversize_file = SimpleUploadedFile('huge.mp4', oversize_content, content_type='video/mp4')
+
+        response = self.client.post(
+            '/api/v1/product/videos/',
+            {'product': str(self.product.id), 'video': oversize_file},
+            format='multipart'
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('exceed 50MB', str(response.data))
+
+    def test_replace_video_removes_old_file_via_on_commit(self):
+        self.client.force_authenticate(user=self.admin)
+        initial_file = make_mp4('initial.mp4')
+        res_create = self.client.post(
+            '/api/v1/product/videos/',
+            {'product': str(self.product.id), 'video': initial_file, 'title': 'Original'},
+            format='multipart'
+        )
+        self.assertEqual(res_create.status_code, status.HTTP_201_CREATED)
+        video_id = res_create.data['id']
+        files_after_create = self.stored_files()
+        self.assertEqual(len(files_after_create), 1)
+
+        # Replace file via PATCH
+        replacement_file = make_mp4('replacement.mp4')
+        with self.captureOnCommitCallbacks(execute=True):
+            res_patch = self.client.patch(
+                f'/api/v1/product/videos/{video_id}/',
+                {'video': replacement_file, 'title': 'Replaced Title'},
+                format='multipart'
+            )
+        self.assertEqual(res_patch.status_code, status.HTTP_200_OK)
+        self.assertEqual(res_patch.data['title'], 'Replaced Title')
+
+        # Old file removed, exactly one video file remains on disk
+        files_after_patch = self.stored_files()
+        self.assertEqual(len(files_after_patch), 1)
+
+    def test_patch_change_title_without_replacing_file(self):
+        self.client.force_authenticate(user=self.admin)
+        vid = ProductVideo.objects.create(product=self.product, video=make_mp4('clip.mp4'), title="Old Title")
+        stored_before = self.stored_files()
+
+        res = self.client.patch(f'/api/v1/product/videos/{vid.id}/', {'title': 'Updated Title'})
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['title'], 'Updated Title')
+        stored_after = self.stored_files()
+        self.assertEqual(len(stored_before), len(stored_after))
+
+    def test_delete_video_removes_row_and_file(self):
+        self.client.force_authenticate(user=self.admin)
+        vid = ProductVideo.objects.create(product=self.product, video=make_mp4('clip.mp4'), title="To Delete")
+        self.assertEqual(len(self.stored_files()), 1)
+
+        with self.captureOnCommitCallbacks(execute=True):
+            res = self.client.delete(f'/api/v1/product/videos/{vid.id}/')
+        self.assertEqual(res.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(ProductVideo.objects.filter(id=vid.id).exists())
+        self.assertEqual(len(self.stored_files()), 0)
+
+    def test_missing_file_on_disk_returns_null_url_no_500(self):
+        vid = ProductVideo.objects.create(product=self.product, video=make_mp4('missing.mp4'), title="Missing")
+        # Remove the file from storage
+        if vid.video and vid.video.storage.exists(vid.video.name):
+            vid.video.storage.delete(vid.video.name)
+
+        # GET detail endpoint on videos
+        res_video = self.client.get(f'/api/v1/product/videos/{vid.id}/')
+        self.assertEqual(res_video.status_code, status.HTTP_200_OK)
+        self.assertIsNone(res_video.data['video'])
+
+        # GET detail on product also renders clean null promotion_video
+        res_product = self.client.get(f'/api/v1/product/products/{self.product.id}/')
+        self.assertEqual(res_product.status_code, status.HTTP_200_OK)
+        self.assertIsNotNone(res_product.data['promotion_video'])
+        self.assertIsNone(res_product.data['promotion_video']['video'])
+
+    def test_public_get_only_active_products_video(self):
+        inactive_prod = self.make_product('Hidden Product', is_active=False)
+        vid_active = ProductVideo.objects.create(product=self.product, video=make_mp4('act.mp4'))
+        vid_inactive = ProductVideo.objects.create(product=inactive_prod, video=make_mp4('inact.mp4'))
+
+        # Public GET
+        res_pub = self.client.get('/api/v1/product/videos/')
+        self.assertEqual(res_pub.status_code, status.HTTP_200_OK)
+        returned_ids = [str(item['id']) for item in res_pub.data['results']]
+        self.assertIn(str(vid_active.id), returned_ids)
+        self.assertNotIn(str(vid_inactive.id), returned_ids)
+
+        # Filter by product works
+        res_filter = self.client.get(f'/api/v1/product/videos/?product={self.product.id}')
+        self.assertEqual(res_filter.status_code, status.HTTP_200_OK)
+        self.assertEqual(res_filter.data['count'], 1)
+
+        # Non-admin writes rejected
+        res_unauth = self.client.post('/api/v1/product/videos/', {'product': str(self.product.id)})
+        self.assertEqual(res_unauth.status_code, status.HTTP_401_UNAUTHORIZED)
+
 

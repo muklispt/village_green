@@ -5,7 +5,7 @@ from django.utils.text import slugify
 from rest_framework.validators import UniqueTogetherValidator
 from pathlib import Path
 from django.db import transaction
-from .validators import validate_product_image_file
+from .validators import validate_product_image_file, validate_product_video_file
 
 
 class ProductCategorySerializer(serializers.ModelSerializer):
@@ -211,17 +211,21 @@ class ProductVideoSerializer(serializers.ModelSerializer):
         read_only_fields = ('id', 'created_at')
 
     def validate_video(self, value):
-        allowed_extensions = {'.mp4', '.webm', '.mov'}
-        extension = Path(value.name).suffix.lower()
+        return validate_product_video_file(value)
 
-        if extension not in allowed_extensions:
-            raise serializers.ValidationError('Only MP4,WebM,and MOV video files are allowed.')
-        max_size = 50 * 1024 * 1024
-
-        if value.size > max_size:
-            raise serializers.ValidationError('Video size must not exceed 50 MB.')
-
-        return value
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+        video_field = instance.video
+        if not video_field:
+            ret['video'] = None
+        else:
+            try:
+                if hasattr(video_field, 'storage') and hasattr(video_field, 'name'):
+                    if not video_field.storage.exists(video_field.name):
+                        ret['video'] = None
+            except Exception:
+                ret['video'] = None
+        return ret
 
 
 class ProductListSerializer(serializers.ModelSerializer):

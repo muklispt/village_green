@@ -246,6 +246,74 @@ ProductImagViewSet = ProductImageViewSet
 
 
 class ProductVideoViewSet(ModelViewSet):
-    queryset = ProductVideo.objects.select_related('product').all()
     serializer_class = ProductVideoSerializer
     permission_classes = [IsAdminOrReadOnly]
+    pagination_class = ProductPagination
+    filter_backends = [SearchFilter]
+    ordering = ['-created_at']
+    search_fields = ['product__name', 'title']
+
+    def get_queryset(self):
+        queryset = ProductVideo.objects.select_related('product')
+
+        if not (self.request.user.is_authenticated and self.request.user.is_staff):
+            queryset = queryset.filter(product__is_active=True)
+
+        product_id = self.request.query_params.get('product')
+        if product_id:
+            try:
+                product_uuid = uuid.UUID(product_id)
+                queryset = queryset.filter(product_id=product_uuid)
+            except ValueError:
+                raise ValidationError({'product': 'Enter a valid product id.'})
+
+        return queryset.order_by('-created_at')
+
+    def create(self, request, *args, **kwargs):
+        product_id = request.data.get('product')
+        if not product_id:
+            raise ValidationError({'product': 'This field is required.'})
+
+        try:
+            product = Product.objects.get(pk=product_id)
+        except (Product.DoesNotExist, ValueError):
+            raise ValidationError({'product': 'Enter a valid product.'})
+
+        if ProductVideo.objects.filter(product=product).exists():
+            raise ValidationError({'product': 'This product already has a promotional video.'})
+
+        return super().create(request, *args, **kwargs)
+
+    def perform_update(self, serializer):
+        instance = self.get_object()
+        old_file_name = instance.video.name if instance.video else None
+        old_storage = instance.video.storage if instance.video else None
+        has_new_file = 'video' in self.request.FILES
+
+        def remove_old_file():
+            if old_file_name and old_storage and old_storage.exists(old_file_name):
+                try:
+                    old_storage.delete(old_file_name)
+                except Exception:
+                    pass
+
+        with transaction.atomic():
+            serializer.save()
+            if has_new_file:
+                transaction.on_commit(remove_old_file)
+
+    def perform_destroy(self, instance):
+        storage = instance.video.storage if instance.video else None
+        file_name = instance.video.name if instance.video else None
+
+        def remove_file():
+            if file_name and storage and storage.exists(file_name):
+                try:
+                    storage.delete(file_name)
+                except Exception:
+                    pass
+
+        with transaction.atomic():
+            instance.delete()
+            transaction.on_commit(remove_file)
+
