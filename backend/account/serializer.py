@@ -369,3 +369,27 @@ class ProfileUpdateSerializer(serializers.ModelSerializer,_CleanFieldsMixin):
         model = User
         fields=('full_name','profileImage','phone','address','city','pincode')
 
+
+
+class AdminLoginSerializer(serializers.Serializer):
+    """Authenticate staff users for the separate admin panel."""
+
+    email = serializers.EmailField()
+    password = serializers.CharField(write_only=True, trim_whitespace=False)
+
+    default_error = "Invalid admin email or password."
+
+    def validate(self, attrs):
+        email = attrs["email"].strip().lower()
+        user = authenticate(
+            request=self.context.get("request"),
+            email=email,
+            password=attrs["password"],
+        )
+
+        # Do not reveal whether an email exists, or whether the account is a customer.
+        if user is None or not user.is_active or not user.is_staff:
+            raise serializers.ValidationError({"detail": self.default_error})
+
+        attrs["user"] = user
+        return attrs
