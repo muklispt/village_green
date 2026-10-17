@@ -135,6 +135,13 @@ class ProductImage(models.Model):
     class Meta:
         db_table = 'product_image'
         ordering =['sort_order','created_at']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['product'],
+                condition=models.Q(is_primary=True),
+                name='unique_image_per_product',
+            )
+        ]
 
     def __str__(self):
         return f'Image for {self.product.name}'
