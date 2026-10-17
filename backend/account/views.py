@@ -201,3 +201,37 @@ class ProfileView(generics.RetrieveUpdateAPIView):
     
 
 
+
+
+class AdminLoginView(APIView):
+    """Issue JWTs only to active staff accounts for the admin panel."""
+
+    permission_classes = [AllowAny]
+    throttle_scope = "admin-login"
+
+    def post(self, request):
+        login_serializer = serializer.AdminLoginSerializer(
+            data=request.data,
+            context={"request": request},
+        )
+        login_serializer.is_valid(raise_exception=True)
+        user = login_serializer.validated_data["user"]
+
+        refresh = RefreshToken.for_user(user)
+        update_last_login(None, user)
+
+        return Response(
+            {
+                "message": "Admin login successful.",
+                "access": str(refresh.access_token),
+                "refresh": str(refresh),
+                "user": {
+                    "id": str(user.id),
+                    "full_name": user.full_name,
+                    "email": user.email,
+                    "role": user.role,
+                    "is_staff": user.is_staff,
+                },
+            },
+            status=status.HTTP_200_OK,
+        )
