@@ -516,6 +516,140 @@ class AccountLifecycleAndProfileTestCase(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn('phone', response.data)
 
+    def test_profile_throttle_returns_429_after_limit(self):
+        from rest_framework_simplejwt.tokens import RefreshToken
+        refresh = RefreshToken.for_user(self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {str(refresh.access_token)}')
+
+        for _ in range(30):
+            res = self.client.get('/api/v1/account/profile/')
+            self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+        # 31st request triggers 429
+        throttled_res = self.client.get('/api/v1/account/profile/')
+        self.assertEqual(throttled_res.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+
+
+class AdminCustomerManagementTestCase(APITestCase):
+
+    def setUp(self):
+        cache.clear()
+        self.admin = User.objects.create_superuser(
+            email='portaladmin@example.com',
+            password='AdminPassword123!',
+            full_name='Portal Admin'
+        )
+        self.staff_no_scope = User.objects.create_user(
+            email='staffnoscope@example.com',
+            password='StaffPassword123!',
+            full_name='Staff Member',
+            is_staff=True,
+            role='admin',
+            is_active=True
+        )
+        self.customer = User.objects.create_user(
+            email='shopper@example.com',
+            password='CustomerPassword123!',
+            full_name='Alice Shopper',
+            phone='+18888888888',
+            is_active=True
+        )
+
+    def tearDown(self):
+        cache.clear()
+
+    def test_customer_token_gets_403_on_admin_customer_endpoints(self):
+        from rest_framework_simplejwt.tokens import RefreshToken
+        refresh = RefreshToken.for_user(self.customer)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {str(refresh.access_token)}')
+
+        response = self.client.get('/api/v1/account/admin/customers/')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+        detail_res = self.client.get(f'/api/v1/account/admin/customers/{self.customer.pk}/')
+        self.assertEqual(detail_res.status_code, status.HTTP_403_FORBIDDEN)
+
+        block_res = self.client.post(f'/api/v1/account/admin/customers/{self.customer.pk}/block/')
+        self.assertEqual(block_res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_staff_account_with_non_admin_scope_token_gets_403(self):
+        from rest_framework_simplejwt.tokens import RefreshToken
+        # Standard token without scope=admin
+        refresh = RefreshToken.for_user(self.staff_no_scope)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {str(refresh.access_token)}')
+
+        response = self.client.get('/api/v1/account/admin/customers/')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_admin_with_admin_scope_can_list_and_paginate_customers(self):
+        from adminpanel.tokens import AdminRefreshToken
+        # Create 25 additional customers
+        for i in range(25):
+            User.objects.create_user(
+                email=f'bulkcustomer{i}@example.com',
+                password='TestPassword123!',
+                full_name=f'Bulk Customer {i}',
+                is_active=True
+            )
+
+        admin_refresh = AdminRefreshToken.for_user(self.admin)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {str(admin_refresh.access_token)}')
+
+        response = self.client.get('/api/v1/account/admin/customers/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('results', response.data)
+        # Default page_size is 20
+        self.assertEqual(len(response.data['results']), 20)
+        self.assertGreaterEqual(response.data['count'], 26)
+
+    def test_admin_search_and_active_filters(self):
+        from adminpanel.tokens import AdminRefreshToken
+        inactive_customer = User.objects.create_user(
+            email='banned@example.com',
+            password='TestPassword123!',
+            full_name='Banned Bob',
+            is_active=False
+        )
+        admin_refresh = AdminRefreshToken.for_user(self.admin)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {str(admin_refresh.access_token)}')
+
+        # Search by full_name
+        search_res = self.client.get('/api/v1/account/admin/customers/?search=Shopper')
+        self.assertEqual(search_res.status_code, status.HTTP_200_OK)
+        emails = [c['email'] for c in search_res.data['results']]
+        self.assertIn(self.customer.email, emails)
+
+        # Filter ?is_active=false
+        inactive_res = self.client.get('/api/v1/account/admin/customers/?is_active=false')
+        self.assertEqual(inactive_res.status_code, status.HTTP_200_OK)
+        inactive_emails = [c['email'] for c in inactive_res.data['results']]
+        self.assertIn('banned@example.com', inactive_emails)
+        self.assertNotIn(self.customer.email, inactive_emails)
+
+    def test_admin_block_and_unblock_calls_revoke_tokens(self):
+        from adminpanel.tokens import AdminRefreshToken
+        from rest_framework_simplejwt.tokens import RefreshToken
+        from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken
+
+        customer_refresh = RefreshToken.for_user(self.customer)
+        admin_refresh = AdminRefreshToken.for_user(self.admin)
+
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {str(admin_refresh.access_token)}')
+
+        # Block customer
+        block_res = self.client.post(f'/api/v1/account/admin/customers/{self.customer.pk}/block/')
+        self.assertEqual(block_res.status_code, status.HTTP_200_OK)
+        self.customer.refresh_from_db()
+        self.assertFalse(self.customer.is_active)
+        self.assertTrue(BlacklistedToken.objects.filter(token__jti=customer_refresh['jti']).exists())
+
+        # Unblock customer
+        unblock_res = self.client.post(f'/api/v1/account/admin/customers/{self.customer.pk}/unblock/')
+        self.assertEqual(unblock_res.status_code, status.HTTP_200_OK)
+        self.customer.refresh_from_db()
+        self.assertTrue(self.customer.is_active)
+
+
 
 
 

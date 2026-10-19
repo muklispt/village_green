@@ -447,3 +447,23 @@ class DeactivateAccountSerializer(serializers.Serializer):
         revoke_all_tokens(user)
         return user
 
+
+class AdminCustomerSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = (
+            'id',
+            'full_name',
+            'email',
+            'phone',
+            'is_active',
+            'city',
+            'address',
+            'pincode',
+            'profileImage',
+            'created_at',
+            'updated_at',
+        )
+        read_only_fields = fields
+
+

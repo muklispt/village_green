@@ -14,6 +14,10 @@ from rest_framework.throttling import ScopedRateThrottle
 
 import logging
 from django.db import transaction
+from django.db.models import Q
+from django.shortcuts import get_object_or_404
+from rest_framework.pagination import PageNumberPagination
+from adminpanel.permissions import IsAdminPanelUser
 
 logger = logging.getLogger(__name__)
 
@@ -255,6 +259,82 @@ class DeactivateAccountView(APIView):
             {"detail": "Your account has been deactivated successfully."},
             status=status.HTTP_200_OK,
         )
+
+
+class AdminCustomerPagination(PageNumberPagination):
+    page_size = 20
+    page_size_query_param = 'page_size'
+    max_page_size = 100
+
+
+class AdminCustomerListView(generics.ListAPIView):
+    permission_classes = [IsAdminPanelUser]
+    pagination_class = AdminCustomerPagination
+    serializer_class = serializer.AdminCustomerSerializer
+
+    def get_queryset(self):
+        qs = User.objects.filter(is_staff=False, is_superuser=False).order_by('-created_at')
+
+        is_active = self.request.query_params.get('is_active')
+        if is_active is not None:
+            if is_active.lower() in ('true', '1'):
+                qs = qs.filter(is_active=True)
+            elif is_active.lower() in ('false', '0'):
+                qs = qs.filter(is_active=False)
+
+        search = self.request.query_params.get('search')
+        if search:
+            search = search.strip()
+            qs = qs.filter(
+                Q(full_name__icontains=search) |
+                Q(email__icontains=search) |
+                Q(phone__icontains=search)
+            )
+
+        return qs
+
+
+class AdminCustomerDetailView(generics.RetrieveAPIView):
+    permission_classes = [IsAdminPanelUser]
+    serializer_class = serializer.AdminCustomerSerializer
+
+    def get_queryset(self):
+        return User.objects.filter(is_staff=False, is_superuser=False)
+
+
+class AdminCustomerBlockView(APIView):
+    permission_classes = [IsAdminPanelUser]
+
+    def post(self, request, pk):
+        customer = get_object_or_404(
+            User.objects.filter(is_staff=False, is_superuser=False),
+            pk=pk
+        )
+        customer.is_active = False
+        customer.save(update_fields=['is_active'])
+        revoke_all_tokens(customer)
+        return Response({
+            "detail": f"Customer {customer.email} has been blocked successfully.",
+            "is_active": False
+        }, status=status.HTTP_200_OK)
+
+
+class AdminCustomerUnblockView(APIView):
+    permission_classes = [IsAdminPanelUser]
+
+    def post(self, request, pk):
+        customer = get_object_or_404(
+            User.objects.filter(is_staff=False, is_superuser=False),
+            pk=pk
+        )
+        customer.is_active = True
+        customer.save(update_fields=['is_active'])
+        revoke_all_tokens(customer)
+        return Response({
+            "detail": f"Customer {customer.email} has been unblocked successfully.",
+            "is_active": True
+        }, status=status.HTTP_200_OK)
+
 
 
          

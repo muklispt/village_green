@@ -2,7 +2,8 @@ from django.urls import path
 from .views import (RegisterView,VerifyOTPView,LoginView,UserView,
                     ForgetPasswordView,ResetPasswordView,GoogleLoginView,
                     ResendOTPView,ProfileView,ChangePasswordView,LogoutView,LogoutAllView,
-                    DeactivateAccountView)
+                    DeactivateAccountView,AdminCustomerListView,AdminCustomerDetailView,
+                    AdminCustomerBlockView,AdminCustomerUnblockView)
 
 urlpatterns=[
     path('register/',RegisterView.as_view(),name='register'),
@@ -19,6 +20,11 @@ urlpatterns=[
     path('google-login/',GoogleLoginView.as_view(),name='auth-google-login'),
     path('resend-otp/',ResendOTPView.as_view(),name="auth-resend-otp"),
     path('profile/',ProfileView.as_view(),name='auth-profile'),
+    # Admin Customer Management
+    path('admin/customers/',AdminCustomerListView.as_view(),name='admin-customer-list'),
+    path('admin/customers/<uuid:pk>/',AdminCustomerDetailView.as_view(),name='admin-customer-detail'),
+    path('admin/customers/<uuid:pk>/block/',AdminCustomerBlockView.as_view(),name='admin-customer-block'),
+    path('admin/customers/<uuid:pk>/unblock/',AdminCustomerUnblockView.as_view(),name='admin-customer-unblock'),
 ]
 
 
