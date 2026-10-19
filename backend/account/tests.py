@@ -88,7 +88,7 @@ class EmailOTPSecurityTestCase(APITestCase):
         })
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn('otp', response.data)
-        self.assertEqual(str(response.data['otp'][0]), 'Invalid OTP.')
+        self.assertEqual(str(response.data['otp'][0]), 'Invalid or expired verification code.')
 
         self.otp_record.refresh_from_db()
         self.assertEqual(self.otp_record.failed_attempts, 1)
@@ -101,7 +101,7 @@ class EmailOTPSecurityTestCase(APITestCase):
                 'otp': '111111'
             })
             self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
-            self.assertEqual(str(res.data['otp'][0]), 'Invalid OTP.')
+            self.assertEqual(str(res.data['otp'][0]), 'Invalid or expired verification code.')
             self.otp_record.refresh_from_db()
             self.assertEqual(self.otp_record.failed_attempts, attempt)
             self.assertFalse(self.otp_record.is_used)
@@ -124,7 +124,7 @@ class EmailOTPSecurityTestCase(APITestCase):
             'otp': self.plain_otp
         })
         self.assertEqual(correct_res.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertEqual(str(correct_res.data['otp'][0]), 'Invalid or expired OTP.')
+        self.assertEqual(str(correct_res.data['otp'][0]), 'Invalid or expired verification code.')
 
     def test_expired_code_rejected(self):
         EmailOtp.objects.filter(pk=self.otp_record.pk).update(
@@ -135,7 +135,7 @@ class EmailOTPSecurityTestCase(APITestCase):
             'otp': self.plain_otp
         })
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertEqual(str(response.data['otp'][0]), 'OTP has expired.')
+        self.assertEqual(str(response.data['otp'][0]), 'Invalid or expired verification code.')
 
     def test_correct_code_verifies(self):
         response = self.client.post('/api/v1/account/otp_veryfication/', {
@@ -192,3 +192,111 @@ class EmailOTPSecurityTestCase(APITestCase):
         self.assertIsNotNone(newest_otp)
         self.assertNotEqual(newest_otp.pk, self.otp_record.pk)
         self.assertEqual(newest_otp.failed_attempts, 0)
+
+    def test_resend_otp_non_existent_email_returns_200_generic(self):
+        response = self.client.post('/api/v1/account/resend-otp/', {
+            'email': 'nosuchuser@example.com'
+        })
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('If an unverified account exists', response.data.get('detail', ''))
+
+    def test_resend_otp_already_verified_returns_200_generic(self):
+        verified_user = User.objects.create_user(
+            email='alreadyverified@example.com',
+            password='SecurePassword123!',
+            full_name='Verified User',
+            is_active=True
+        )
+        response = self.client.post('/api/v1/account/resend-otp/', {
+            'email': verified_user.email
+        })
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('If an unverified account exists', response.data.get('detail', ''))
+
+
+class SecurityIsolationTestCase(APITestCase):
+
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user(
+            email='userforreset@example.com',
+            password='OldSecurePass123!',
+            full_name='Reset Tester',
+            is_active=True
+        )
+
+    def tearDown(self):
+        cache.clear()
+
+    def test_reset_password_rejects_tampered_token_with_generic_error(self):
+        from django.utils.http import urlsafe_base64_encode
+        from django.utils.encoding import force_bytes
+        uid = urlsafe_base64_encode(force_bytes(self.user.pk))
+        response = self.client.post('/api/v1/account/reset-password/', {
+            'uid': uid,
+            'token': 'completely-invalid-token',
+            'new_password': 'NewPassword123!',
+            'confirm_password': 'NewPassword123!'
+        })
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        detail = response.data.get('detail')
+        detail_str = str(detail[0]) if isinstance(detail, list) else str(detail)
+        self.assertEqual(detail_str, 'Invalid or expired reset link.')
+
+    def test_reset_password_success_and_revokes_tokens(self):
+        from django.utils.http import urlsafe_base64_encode
+        from django.utils.encoding import force_bytes
+        from django.contrib.auth.tokens import default_token_generator
+        from rest_framework_simplejwt.tokens import RefreshToken
+        from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken
+
+        refresh = RefreshToken.for_user(self.user)
+        uid = urlsafe_base64_encode(force_bytes(self.user.pk))
+        token = default_token_generator.make_token(self.user)
+
+        response = self.client.post('/api/v1/account/reset-password/', {
+            'uid': uid,
+            'token': token,
+            'new_password': 'BrandNewPass123!',
+            'confirm_password': 'BrandNewPass123!'
+        })
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(BlacklistedToken.objects.filter(token__jti=refresh['jti']).exists())
+
+    def test_register_smtp_failure_rolls_back_user_and_returns_503(self):
+        from unittest.mock import patch
+        data = {
+            'full_name': 'Failed Mail User',
+            'email': 'failedmail@example.com',
+            'password': 'SecurePassword123!',
+            'confirm_password': 'SecurePassword123!'
+        }
+        with patch('account.views.send_otp_email', side_effect=Exception('SMTP Connection Refused')):
+            response = self.client.post('/api/v1/account/register/', data)
+
+        self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+        self.assertFalse(User.objects.filter(email='failedmail@example.com').exists())
+
+    def test_google_login_rejects_admin_or_staff_account(self):
+        from unittest.mock import patch
+        admin_user = User.objects.create_superuser(
+            email='admin@example.com',
+            password='AdminPassword123!',
+            full_name='Admin User'
+        )
+        fake_payload = {
+            'sub': '1234567890',
+            'email': admin_user.email,
+            'email_verified': True,
+            'name': 'Admin User'
+        }
+        with patch('google.oauth2.id_token.verify_oauth2_token', return_value=fake_payload), \
+             patch('django.conf.settings.GOOGLE_CLIENT_ID', 'test-client-id'):
+            response = self.client.post('/api/v1/account/google-login/', {
+                'id_token': 'fake-token'
+            })
+        self.assertIn(response.status_code, (status.HTTP_400_BAD_REQUEST, status.HTTP_403_FORBIDDEN))
+        detail_msg = str(response.data)
+        self.assertIn('Admin accounts must sign in through the admin portal', detail_msg)
+
+

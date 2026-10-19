@@ -9,10 +9,11 @@ from django.utils.http import urlsafe_base64_decode
 from django.utils.encoding import force_str
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token as google_id_token
+from django.contrib.auth.tokens import default_token_generator
 from datetime import timedelta
 from django.utils import timezone
 
-from .utils import OTP_COOLDOWN_SECONDS
+from .utils import OTP_COOLDOWN_SECONDS, revoke_all_tokens
 from .otp import verify_otp
 
 class _CleanFieldsMixin:
@@ -84,6 +85,7 @@ class RegisterSerializer(_CleanFieldsMixin,serializers.ModelSerializer):
         return attrs
 
     def create(self, validated_data):
+        validated_data['role'] = 'Customer'
         return User.objects.create_user(**validated_data)
 
 
@@ -98,14 +100,14 @@ class VerifyOTPSerializer(serializers.Serializer):
         return value
 
     def validate(self, attrs):
-        email = attrs['email']
-        otp = attrs['otp']
+        email = attrs['email'].strip().lower()
+        otp = attrs['otp'].strip()
 
         try:
-            user = User.objects.get(email=email)
+            user = User.objects.get(email__iexact=email)
         except User.DoesNotExist:
             raise serializers.ValidationError({
-                'email': 'Invalid verification request.'
+                'otp': 'Invalid or expired verification code.'
             })
 
         otp_obj = verify_otp(user, otp)
@@ -133,7 +135,7 @@ class LoginSerializer(serializers.Serializer):
                     'error':'Check email and password'
             })
 
-        if user.is_superuser:
+        if user.is_superuser or user.is_staff:
             raise serializers.ValidationError({
                 'error':'Check email and password'
             })
@@ -168,21 +170,29 @@ class ForgetPassword(serializers.Serializer):
 class ResetPasswordSerializer(serializers.Serializer):
     uid = serializers.CharField()
     token = serializers.CharField()
-    new_password = serializers.CharField(write_only=True,min_length=8)
-    confirm_password = serializers.CharField(write_only=True,min_length=8)
+    new_password = serializers.CharField(write_only=True, min_length=8)
+    confirm_password = serializers.CharField(write_only=True, min_length=8)
+
+    GENERIC_ERROR_MESSAGE = "Invalid or expired reset link."
 
     def validate(self, attrs):
-        if attrs['new_password']!=attrs['confirm_password']:
-            raise serializers.ValidationError({'confirm_password':'password do not match'})
+        if attrs['new_password'] != attrs['confirm_password']:
+            raise serializers.ValidationError({'confirm_password': 'Passwords do not match.'})
+
         try:
             uid = force_str(urlsafe_base64_decode(attrs['uid']))
             user = User.objects.get(pk=uid)
-        except (User.DoesNotExist,ValueError,TypeError,OverflowError):
-            raise serializers.ValidationError({'uid':'Invalid reset link'})
+        except (User.DoesNotExist, ValueError, TypeError, OverflowError):
+            raise serializers.ValidationError({'detail': self.GENERIC_ERROR_MESSAGE})
+
+        if not default_token_generator.check_token(user, attrs['token']):
+            raise serializers.ValidationError({'detail': self.GENERIC_ERROR_MESSAGE})
+
         try:
-            validate_password(attrs['new_password'])
+            validate_password(attrs['new_password'], user=user)
         except DjangoValidationError as exc:
-            raise serializers.ValidationError({'password':exc.messages})
+            raise serializers.ValidationError({'password': exc.messages})
+
         attrs['user'] = user
         return attrs
 
@@ -190,6 +200,7 @@ class ResetPasswordSerializer(serializers.Serializer):
         user = self.validated_data['user']
         user.set_password(self.validated_data['new_password'])
         user.save(update_fields=['password'])
+        revoke_all_tokens(user)
         return user
 
     
@@ -253,7 +264,7 @@ class GoogleLoginSerializer(serializers.Serializer):
         if not payload.get('email'):
             raise serializers.ValidationError("Google account has no email address.")
 
-        if not payload.get('email_verified'):
+        if payload.get('email_verified') is not True:
             raise serializers.ValidationError("Google account email is not verified.")
 
         if not payload.get('sub'):
@@ -277,12 +288,15 @@ class GoogleLoginSerializer(serializers.Serializer):
         full_name = payload.get('name') or email.split('@')[0]
         picture = payload.get('picture')
 
-      
         user = User.objects.filter(google_id=google_id).first()
         if user:
             if not user.is_active:
                 raise serializers.ValidationError({
                     'detail': "This account has been deactivated."
+                })
+            if user.is_staff or user.is_superuser or user.role == 'admin':
+                raise serializers.ValidationError({
+                    'detail': "Admin accounts must sign in through the admin portal."
                 })
             if picture and not user.profileImage:
                 user.profileImage = picture
@@ -295,7 +309,11 @@ class GoogleLoginSerializer(serializers.Serializer):
                 raise serializers.ValidationError({
                     'detail': "This account is inactive. Please verify your email first."
                 })
-        
+            if user.is_staff or user.is_superuser or user.role == 'admin':
+                raise serializers.ValidationError({
+                    'detail': "Admin accounts must sign in through the admin portal."
+                })
+
             if user.google_id and user.google_id != google_id:
                 raise serializers.ValidationError({
                     'detail': "An account with this email is already linked to another Google account."
@@ -312,50 +330,37 @@ class GoogleLoginSerializer(serializers.Serializer):
                 user.save(update_fields=update_fields)
             return user, False
 
-    
-        role_val = self.validated_data.get('role', 'Customer')
-        if isinstance(role_val, (tuple, list)):
-            role_val = role_val[0]
-
+        # Always assign 'Customer' role, ignoring any client-sent value
         user = User.objects.create(
             full_name=self._unique_username(email, full_name),
             email=email,
-            role=role_val,
+            role='Customer',
             is_active=True,
             google_id=google_id,
             profileImage=picture,
         )
         user.set_unusable_password()
-      
         user.save(update_fields=['password'])
         return user, True
 
 
 class ResendOTPSerializer(serializers.Serializer):
-
     email = serializers.EmailField()
 
-    def validate_email(self,value):
-        try:
-            user = User.objects.get(email__iexact=value)
-        except User.DoesNotExist:
-            raise serializers.ValidationError("No account found with this email.")
+    def validate_email(self, value):
+        normalized = value.strip().lower()
+        user = User.objects.filter(email__iexact=normalized).first()
 
-        if user.is_active:
-            raise serializers.ValidationError("Email is already verified.")
+        if user and not user.is_active:
+            cooldown_cutoff = timezone.now() - timedelta(seconds=OTP_COOLDOWN_SECONDS)
+            recent_otp = EmailOtp.objects.filter(user=user, created_at__gte=cooldown_cutoff).exists()
+            if recent_otp:
+                raise serializers.ValidationError(
+                    f"Please wait {OTP_COOLDOWN_SECONDS} seconds before requesting a new code."
+                )
+            self.context['eligible_user'] = user
 
-        cooldown_cutoff = timezone.now() - timedelta(seconds=OTP_COOLDOWN_SECONDS)
-        recent_otp = (
-            EmailOtp.objects.filter(user=user,created_at__gte=cooldown_cutoff).exists()
-
-        )
-        if recent_otp:
-            raise serializers.ValidationError(
-                  f"Please wait {OTP_COOLDOWN_SECONDS} seconds before requesting a new code."
-            )
-        
-        self.context['user'] = user
-        return value
+        return normalized
 
 class ProfileSerializer(serializers.ModelSerializer):
     class Meta:

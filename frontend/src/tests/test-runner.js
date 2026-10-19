@@ -61,32 +61,32 @@ describe("Error Handling & Cooldown Extraction Tests", () => {
     assert.equal(secs, 58);
   });
 
-  test("parseApiError handles HTTP 400 non-existent user error", () => {
+  test("parseApiError handles HTTP 400 uniform non-leaking OTP error", () => {
     const errorResponse = {
       response: {
         status: 400,
         data: {
-          email: ["No account found with this email."],
+          otp: ["Invalid or expired verification code."],
         },
       },
     };
 
     const { fieldErrors } = parseApiError(errorResponse);
-    assert.equal(fieldErrors.email, "No account found with this email.");
+    assert.equal(fieldErrors.otp, "Invalid or expired verification code.");
   });
 
-  test("parseApiError handles HTTP 400 already verified email", () => {
+  test("parseApiError handles HTTP 400 max attempts exceeded message", () => {
     const errorResponse = {
       response: {
         status: 400,
         data: {
-          email: ["Email is already verified."],
+          otp: ["Too many attempts. Request a new code."],
         },
       },
     };
 
     const { fieldErrors } = parseApiError(errorResponse);
-    assert.equal(fieldErrors.email, "Email is already verified.");
+    assert.equal(fieldErrors.otp, "Too many attempts. Request a new code.");
   });
 
   test("parseApiError masks HTTP 500 server errors and avoids leaking internals", () => {

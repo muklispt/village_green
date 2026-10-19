@@ -17,6 +17,23 @@ from .otp import OTP_EXPIRY_MINUTES, OTP_COOLDOWN_SECONDS, create_otp
 def _uid_for(user):
     return urlsafe_base64_encode(force_bytes(user.pk))
 
+def revoke_all_tokens(user):
+    """
+    Revoke all outstanding refresh tokens for the given user by recording them in BlacklistedToken.
+    """
+    from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
+    tokens = OutstandingToken.objects.filter(user=user)
+    if not tokens.exists():
+        return
+    existing_ids = set(
+        BlacklistedToken.objects.filter(token__in=tokens).values_list('token_id', flat=True)
+    )
+    to_create = [
+        BlacklistedToken(token=t) for t in tokens if t.pk not in existing_ids
+    ]
+    if to_create:
+        BlacklistedToken.objects.bulk_create(to_create, ignore_conflicts=True)
+
 def send_otp_email(email):
     user = User.objects.get(email=email)
     otp_record, otp = create_otp(user)

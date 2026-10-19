@@ -101,7 +101,7 @@ export default function VerifyOTP() {
       const successMsg =
         response.data?.detail ||
         response.data?.message ||
-        "A new verification code has been sent to your email.";
+        "If an unverified account exists for this email, a verification code has been sent.";
       setResendStatusMessage(successMsg);
 
       // Start countdown only after a successful resend request

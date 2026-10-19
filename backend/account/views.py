@@ -12,23 +12,39 @@ from django.contrib.auth.models import update_last_login
 from rest_framework.throttling import ScopedRateThrottle
 
 
-# Create your views here.
+import logging
+from django.db import transaction
+
+logger = logging.getLogger(__name__)
 
 class RegisterView(APIView):
     permission_classes = [AllowAny]
     throttle_scope = 'register'
-    def post(self,request):
+
+    def post(self, request):
         serializers = serializer.RegisterSerializer(data=request.data)
 
         if serializers.is_valid():
-            serializers.save()
-            send_otp_email(serializers.validated_data['email'])
+            email = serializers.validated_data['email']
+            try:
+                with transaction.atomic():
+                    serializers.save()
+                    send_otp_email(email)
+            except Exception as exc:
+                logger.exception("[REGISTER] Email delivery failed for %s: %s", email, exc)
+                return Response(
+                    {'error': 'Service temporarily unavailable. Unable to send verification email. Please try again later.'},
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
+
             return Response(
-                {'message':'Registration successful. A verification code has been sent to your email.',
-                 'email':serializers.validated_data['email']},
+                {
+                    'message': 'Registration successful. A verification code has been sent to your email.',
+                    'email': email,
+                },
                 status=status.HTTP_201_CREATED,
             )
-        return Response(serializers.errors,status=status.HTTP_400_BAD_REQUEST)
+        return Response(serializers.errors, status=status.HTTP_400_BAD_REQUEST)
 
 class VerifyOTPView(APIView):
     permission_classes = [AllowAny]
@@ -137,6 +153,11 @@ class GoogleLoginView(APIView):
                 'detail': "This account has been deactivated."
             }, status=status.HTTP_403_FORBIDDEN)
 
+        if user.is_staff or user.is_superuser or user.role == 'admin':
+            return Response({
+                'detail': "Admin accounts must sign in through the admin portal."
+            }, status=status.HTTP_403_FORBIDDEN)
+
         if created:
             send_welcom_email(user)
 
@@ -161,18 +182,26 @@ class GoogleLoginView(APIView):
         )
 
 class ResendOTPView(APIView):
-
-    permission_classes =[AllowAny]
-    throttle_classes =[ScopedRateThrottle]
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
     throttle_scope = 'resend-otp'
 
-    def post(self,request):
+    def post(self, request):
         serializers = serializer.ResendOTPSerializer(data=request.data)
         serializers.is_valid(raise_exception=True)
-        user = serializers.validated_data['email']
-        send_otp_email(user)
+        user = serializers.context.get('eligible_user')
+        if user:
+            try:
+                send_otp_email(user.email)
+            except Exception as exc:
+                logger.exception("[RESEND_OTP] Email delivery failed for %s: %s", user.email, exc)
+                return Response(
+                    {'error': 'Service temporarily unavailable. Unable to send verification email.'},
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
+
         return Response(
-            {"detail": "A new verification code has been sent to your email."},
+            {"detail": "If an unverified account exists for this email, a verification code has been sent."},
             status=status.HTTP_200_OK,
         )
 
