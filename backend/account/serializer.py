@@ -380,8 +380,70 @@ class ProfileSerializer(serializers.ModelSerializer):
                  'city','address','pincode')
         read_only_fields = fields
 
-class ProfileUpdateSerializer(serializers.ModelSerializer,_CleanFieldsMixin):
+class ProfileUpdateSerializer(serializers.ModelSerializer, _CleanFieldsMixin):
+    phone = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+
     class Meta:
         model = User
-        fields=('full_name','profileImage','phone','address','city','pincode')
+        fields = ('full_name', 'profileImage', 'phone', 'address', 'city', 'pincode')
+
+    def validate_phone(self, value):
+        if value is None:
+            return None
+        value = str(value).strip()
+        if not value:
+            return None
+
+        user = self.context.get('request').user if self.context.get('request') else self.instance
+        qs = User.objects.filter(phone=value)
+        if user and getattr(user, 'pk', None):
+            qs = qs.exclude(pk=user.pk)
+        if qs.exists():
+            raise serializers.ValidationError('This phone number is already registered to another account.')
+
+        User.phone_regex(value)
+        return value
+
+
+class DeactivateAccountSerializer(serializers.Serializer):
+    password = serializers.CharField(write_only=True, required=False)
+    credential = serializers.CharField(write_only=True, required=False)
+    id_token = serializers.CharField(write_only=True, required=False)
+
+    def validate(self, attrs):
+        user = self.context['request'].user
+        password = attrs.get('password')
+        token = attrs.get('credential') or attrs.get('id_token')
+
+        if user.has_usable_password():
+            if not password:
+                raise serializers.ValidationError({'password': 'Password is required to deactivate your account.'})
+            if not user.check_password(password):
+                raise serializers.ValidationError({'password': 'Password is incorrect.'})
+        else:
+            if not token:
+                raise serializers.ValidationError({'credential': 'Google sign-in verification is required to deactivate this account.'})
+            client_id = getattr(settings, 'GOOGLE_CLIENT_ID', None) or getattr(settings, 'GOOGLE_CLINT_ID', None)
+            try:
+                payload = google_id_token.verify_oauth2_token(
+                    token,
+                    google_requests.Request(),
+                    client_id,
+                    clock_skew_in_seconds=10,
+                )
+            except Exception:
+                raise serializers.ValidationError({'credential': 'Google verification failed. Please try again.'})
+
+            payload_email = str(payload.get('email', '')).strip().lower()
+            if payload_email != user.email.lower() or payload.get('email_verified') is not True:
+                raise serializers.ValidationError({'credential': 'Google account does not match this user account.'})
+
+        return attrs
+
+    def save(self, **kwargs):
+        user = self.context['request'].user
+        user.is_active = False
+        user.save(update_fields=['is_active'])
+        revoke_all_tokens(user)
+        return user
 

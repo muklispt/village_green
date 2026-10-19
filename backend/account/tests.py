@@ -407,4 +407,115 @@ class PasswordAndSessionManagementTestCase(APITestCase):
         self.assertTrue(BlacklistedToken.objects.filter(token__jti=refresh2['jti']).exists())
 
 
+class AccountLifecycleAndProfileTestCase(APITestCase):
+
+    def setUp(self):
+        cache.clear()
+        self.password = 'UserSecret123!'
+        self.user = User.objects.create_user(
+            email='lifecycleuser@example.com',
+            password=self.password,
+            full_name='Lifecycle Tester',
+            phone='+12345678901',
+            is_active=True
+        )
+
+    def tearDown(self):
+        cache.clear()
+
+    def test_deactivate_account_with_correct_password(self):
+        from rest_framework_simplejwt.tokens import RefreshToken
+        from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken
+
+        refresh = RefreshToken.for_user(self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {str(refresh.access_token)}')
+
+        response = self.client.post('/api/v1/account/deactivate/', {
+            'password': self.password
+        })
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.is_active)
+        self.assertTrue(BlacklistedToken.objects.filter(token__jti=refresh['jti']).exists())
+
+    def test_deactivate_account_rejects_wrong_password(self):
+        from rest_framework_simplejwt.tokens import RefreshToken
+        refresh = RefreshToken.for_user(self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {str(refresh.access_token)}')
+
+        response = self.client.post('/api/v1/account/deactivate/', {
+            'password': 'WrongPassword123!'
+        })
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.is_active)
+
+    def test_deactivate_google_only_account(self):
+        from unittest.mock import patch
+        from rest_framework_simplejwt.tokens import RefreshToken
+
+        google_user = User.objects.create(
+            email='googleonly@example.com',
+            full_name='Google Only',
+            google_id='gid-99999',
+            is_active=True
+        )
+        google_user.set_unusable_password()
+        google_user.save()
+
+        refresh = RefreshToken.for_user(google_user)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {str(refresh.access_token)}')
+
+        fake_payload = {
+            'sub': 'gid-99999',
+            'email': google_user.email,
+            'email_verified': True
+        }
+        with patch('google.oauth2.id_token.verify_oauth2_token', return_value=fake_payload), \
+             patch('django.conf.settings.GOOGLE_CLIENT_ID', 'test-client-id'):
+            response = self.client.post('/api/v1/account/deactivate/', {
+                'credential': 'valid-google-cred'
+            })
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        google_user.refresh_from_db()
+        self.assertFalse(google_user.is_active)
+
+    def test_profile_update_normalizes_empty_phone_to_none(self):
+        from rest_framework_simplejwt.tokens import RefreshToken
+        refresh = RefreshToken.for_user(self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {str(refresh.access_token)}')
+
+        response = self.client.put('/api/v1/account/profile/', {
+            'full_name': 'Lifecycle Tester Updated',
+            'phone': '   ',
+            'address': '123 Test St',
+            'city': 'Testville',
+            'pincode': '12345'
+        })
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.user.refresh_from_db()
+        self.assertIsNone(self.user.phone)
+
+    def test_profile_update_rejects_duplicate_phone(self):
+        from rest_framework_simplejwt.tokens import RefreshToken
+        User.objects.create_user(
+            email='otheruser@example.com',
+            password='OtherPass123!',
+            full_name='Other User',
+            phone='+19999999999',
+            is_active=True
+        )
+        refresh = RefreshToken.for_user(self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {str(refresh.access_token)}')
+
+        response = self.client.put('/api/v1/account/profile/', {
+            'full_name': 'Lifecycle Tester',
+            'phone': '+19999999999'
+        })
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('phone', response.data)
+
+
+
 

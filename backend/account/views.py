@@ -231,15 +231,30 @@ class ResendOTPView(APIView):
 
 class ProfileView(generics.RetrieveUpdateAPIView):
     serializer_class = serializer.ProfileSerializer
-    permission_classes =[IsAuthenticated]
+    permission_classes = [IsAuthenticated]
+    throttle_scope = 'profile'
 
     def get_object(self):
         return self.request.user
 
     def get_serializer_class(self):
-        if self.request.method in ('PATCH','PUT'):
+        if self.request.method in ('PATCH', 'PUT'):
             return serializer.ProfileUpdateSerializer
         return serializer.ProfileSerializer
+
+
+class DeactivateAccountView(APIView):
+    permission_classes = [IsAuthenticated]
+    throttle_scope = 'change-password'
+
+    def post(self, request):
+        serializers = serializer.DeactivateAccountSerializer(data=request.data, context={'request': request})
+        serializers.is_valid(raise_exception=True)
+        serializers.save()
+        return Response(
+            {"detail": "Your account has been deactivated successfully."},
+            status=status.HTTP_200_OK,
+        )
 
 
          
