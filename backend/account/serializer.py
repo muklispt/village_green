@@ -205,23 +205,29 @@ class ResetPasswordSerializer(serializers.Serializer):
 
     
 class ChangePasswordSerializer(serializers.Serializer):
-    current_password = serializers.CharField(write_only=True,min_length=8)
-    new_password = serializers.CharField(write_only=True,min_length=8)
-    confirm_password = serializers.CharField(write_only=True)
+    current_password = serializers.CharField(write_only=True, required=True)
+    new_password = serializers.CharField(write_only=True, min_length=8, required=True)
+    confirm_password = serializers.CharField(write_only=True, required=True)
 
-    def validate_current_password(self,value):
-        if not self.context['request'].user.chack_password(value):
-            raise serializers.ValidationError('current password is incorrect.')
+    def validate_current_password(self, value):
+        user = self.context['request'].user
+        if not user.check_password(value):
+            raise serializers.ValidationError('Current password is incorrect.')
         return value
 
     def validate(self, attrs):
-        if attrs['new_password']!=attrs.pop('confirm_password'):
-            raise serializers.ValidationError({'confirm_passwrod':'password do not match.'})
+        if attrs['new_password'] != attrs.get('confirm_password'):
+            raise serializers.ValidationError({'confirm_password': 'Passwords do not match.'})
+
+        if attrs['current_password'] == attrs['new_password']:
+            raise serializers.ValidationError({'new_password': 'New password cannot be the same as the current password.'})
+
+        user = self.context['request'].user
         try:
-            validate_password(attrs['new_password'])
+            validate_password(attrs['new_password'], user=user)
         except DjangoValidationError as exc:
-            raise serializers.ValidationError({'message':exc.messages})
-        
+            raise serializers.ValidationError({'new_password': exc.messages})
+
         return attrs
 
     def save(self, **kwargs):
@@ -229,6 +235,11 @@ class ChangePasswordSerializer(serializers.Serializer):
         user.set_password(self.validated_data['new_password'])
         user.save(update_fields=['password'])
         return user
+
+
+class LogoutSerializer(serializers.Serializer):
+    refresh = serializers.CharField(required=True)
+
 
 class GoogleLoginSerializer(serializers.Serializer):
     id_token = serializers.CharField(write_only=True, required=False)

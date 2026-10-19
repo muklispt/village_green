@@ -300,3 +300,111 @@ class SecurityIsolationTestCase(APITestCase):
         self.assertIn('Admin accounts must sign in through the admin portal', detail_msg)
 
 
+class PasswordAndSessionManagementTestCase(APITestCase):
+
+    def setUp(self):
+        cache.clear()
+        self.user_password = 'InitialPassword123!'
+        self.user = User.objects.create_user(
+            email='sessionsuser@example.com',
+            password=self.user_password,
+            full_name='Session Tester',
+            is_active=True
+        )
+
+    def tearDown(self):
+        cache.clear()
+
+    def test_change_password_success_and_rotates_tokens(self):
+        from rest_framework_simplejwt.tokens import RefreshToken
+        from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken
+
+        old_refresh = RefreshToken.for_user(self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {str(old_refresh.access_token)}')
+
+        response = self.client.post('/api/v1/account/change-password/', {
+            'current_password': self.user_password,
+            'new_password': 'UpdatedPassword123!',
+            'confirm_password': 'UpdatedPassword123!'
+        })
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('access', response.data)
+        self.assertIn('refresh', response.data)
+
+        # Old refresh token is now blacklisted
+        self.assertTrue(BlacklistedToken.objects.filter(token__jti=old_refresh['jti']).exists())
+
+        # Old password cannot log in
+        login_fail = self.client.post('/api/v1/account/login/', {
+            'email': self.user.email,
+            'password': self.user_password
+        })
+        self.assertEqual(login_fail.status_code, status.HTTP_400_BAD_REQUEST)
+
+        # New password logs in successfully
+        login_success = self.client.post('/api/v1/account/login/', {
+            'email': self.user.email,
+            'password': 'UpdatedPassword123!'
+        })
+        self.assertEqual(login_success.status_code, status.HTTP_200_OK)
+
+    def test_change_password_rejects_same_password(self):
+        from rest_framework_simplejwt.tokens import RefreshToken
+        refresh = RefreshToken.for_user(self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {str(refresh.access_token)}')
+
+        response = self.client.post('/api/v1/account/change-password/', {
+            'current_password': self.user_password,
+            'new_password': self.user_password,
+            'confirm_password': self.user_password
+        })
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('new_password', response.data)
+        self.assertIn('cannot be the same', str(response.data['new_password']))
+
+    def test_change_password_rejects_incorrect_current_password(self):
+        from rest_framework_simplejwt.tokens import RefreshToken
+        refresh = RefreshToken.for_user(self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {str(refresh.access_token)}')
+
+        response = self.client.post('/api/v1/account/change-password/', {
+            'current_password': 'WrongPassword999!',
+            'new_password': 'BrandNewPassword123!',
+            'confirm_password': 'BrandNewPassword123!'
+        })
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('current_password', response.data)
+
+    def test_logout_blacklists_refresh_token(self):
+        from rest_framework_simplejwt.tokens import RefreshToken
+        from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken
+
+        refresh = RefreshToken.for_user(self.user)
+        response = self.client.post('/api/v1/account/logout/', {
+            'refresh': str(refresh)
+        })
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(BlacklistedToken.objects.filter(token__jti=refresh['jti']).exists())
+
+        # Second logout call with same token does not throw 500 error
+        second_response = self.client.post('/api/v1/account/logout/', {
+            'refresh': str(refresh)
+        })
+        self.assertEqual(second_response.status_code, status.HTTP_200_OK)
+
+    def test_logout_all_devices(self):
+        from rest_framework_simplejwt.tokens import RefreshToken
+        from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken
+
+        refresh1 = RefreshToken.for_user(self.user)
+        refresh2 = RefreshToken.for_user(self.user)
+
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {str(refresh1.access_token)}')
+        response = self.client.post('/api/v1/account/logout-all/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.assertTrue(BlacklistedToken.objects.filter(token__jti=refresh1['jti']).exists())
+        self.assertTrue(BlacklistedToken.objects.filter(token__jti=refresh2['jti']).exists())
+
+
+

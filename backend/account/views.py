@@ -3,7 +3,7 @@ from rest_framework import generics
 from .models import User,EmailOtp
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from . utils import send_otp_email,send_reset_password_mail,send_welcom_email
+from . utils import send_otp_email,send_reset_password_mail,send_welcom_email,revoke_all_tokens
 from .otp import mark_otp_used
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.views import status
@@ -115,29 +115,53 @@ class ResetPasswordView(APIView):
         serializers.save()
         return Response({"detail": "Password reset successfully."}, status=status.HTTP_200_OK)
         
-class ChangePasswordView(generics.CreateAPIView):
-    permission_classes=[IsAuthenticated]
-    def post(self,request):
-        serializers = serializer.ChangePasswordSerializer(data=request.user,context={'request':request})
+class ChangePasswordView(APIView):
+    permission_classes = [IsAuthenticated]
+    throttle_scope = 'change-password'
+
+    def post(self, request):
+        serializers = serializer.ChangePasswordSerializer(data=request.data, context={'request': request})
         serializers.is_valid(raise_exception=True)
         serializers.save()
 
-        from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken,OutstandingToken
-        outstanding_tokens = OutstandingToken.objects.filter(user=request.user)
-        existing = set(
-            BlacklistedToken.objects.filter(token__in=outstanding_tokens)
-            .values_list('token_id',flat=True)
-        )
-        BlacklistedToken.objects.bulk_create(
-            [BlacklistedToken(token=t) for t in outstanding_tokens if t.pk not in existing],
-            ignore_conflicts=True,
-        )
+        # Revoke previous tokens
+        revoke_all_tokens(request.user)
+
+        # Issue fresh access and refresh token pair
         refresh = RefreshToken.for_user(request.user)
         return Response({
             "detail": "Password changed successfully.",
-            "refresh": str(refresh),
             "access": str(refresh.access_token),
+            "refresh": str(refresh),
         }, status=status.HTTP_200_OK)
+
+
+class LogoutView(APIView):
+    permission_classes = [AllowAny]
+    throttle_scope = 'login'
+
+    def post(self, request):
+        serializers = serializer.LogoutSerializer(data=request.data)
+        serializers.is_valid(raise_exception=True)
+        refresh_token = serializers.validated_data['refresh']
+
+        try:
+            token = RefreshToken(refresh_token)
+            token.blacklist()
+        except Exception:
+            # Tolerates already blacklisted or expired tokens gracefully
+            pass
+
+        return Response({"detail": "Successfully logged out."}, status=status.HTTP_200_OK)
+
+
+class LogoutAllView(APIView):
+    permission_classes = [IsAuthenticated]
+    throttle_scope = 'login'
+
+    def post(self, request):
+        revoke_all_tokens(request.user)
+        return Response({"detail": "Successfully logged out from all devices."}, status=status.HTTP_200_OK)
      
 class GoogleLoginView(APIView):
     permission_classes = [AllowAny]

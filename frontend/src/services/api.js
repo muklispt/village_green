@@ -19,6 +19,7 @@ const PUBLIC_ENDPOINTS = [
   "/account/forget-password/",
   "/account/reset-password/",
   "/account/resend-otp/",
+  "/account/logout/",
 ];
 
 /**
