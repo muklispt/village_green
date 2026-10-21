@@ -6,7 +6,7 @@ from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import override_settings
 from PIL import Image
-from rest_framework.test import APITestCase
+from rest_framework.test import APITestCase,APIClient
 
 from .models import Product, ProductCategory
 
@@ -31,8 +31,19 @@ def make_webm(name='promo.webm'):
     return SimpleUploadedFile(name, content, content_type='video/webm')
 
 
+class AdminScopeClient(APIClient):
+    """force_authenticate() for staff users also sets an admin-panel token scope,
+    like a real login through /api/v1/admin-auth/login/ would."""
+
+    def force_authenticate(self, user=None, token=None):
+        if user is not None and user.is_staff and token is None:
+            token = {'scope': 'admin'}
+        super().force_authenticate(user, token)
+
+
 class ProductAPIBase(APITestCase):
     """Creates users, a category, a product, and a temporary MEDIA_ROOT."""
+    client_class = AdminScopeClient
 
     def setUp(self):
         super().setUp()
@@ -69,3 +80,4 @@ class ProductAPIBase(APITestCase):
         for root, _, files in os.walk(self.media_root):
             found += [os.path.join(root, f) for f in files]
         return found
+

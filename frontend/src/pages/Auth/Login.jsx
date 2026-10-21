@@ -40,7 +40,7 @@ export default function Login() {
   const redirectAfterAuth = (userObj, dataObj) => {
     const role = (userObj?.role || dataObj?.user?.role || dataObj?.role || "").toLowerCase();
     if (role === "admin") {
-      navigate("/");
+      navigate("/admin/dashboard");
     } else {
       navigate("/");
     }

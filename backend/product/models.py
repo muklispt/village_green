@@ -62,6 +62,36 @@ class Product(models.Model):
             self.slug = slugify(self.name)
         super().save(*args,**kwargs)
 
+    def sync_stock_from_variants(self):
+        """
+        Calculates sellable availability from valid, active variants.
+        If the product has active variants, stock_quantity is set to the sum
+        of sellable variant stock (without adding product-level stock).
+        If the product has no variants, preserves valid product-level stock.
+        """
+        active_vars = self.variants.filter(is_active=True)
+        if active_vars.exists():
+            total = active_vars.aggregate(total=models.Sum('stock_quantity'))['total'] or 0
+            if self.stock_quantity != total:
+                self.stock_quantity = total
+                Product.objects.filter(pk=self.pk).update(stock_quantity=total)
+            return total
+        return self.stock_quantity
+
+    @property
+    def is_in_stock(self):
+        active_vars = self.variants.filter(is_active=True)
+        if active_vars.exists():
+            return any(v.stock_quantity > 0 for v in active_vars)
+        return self.stock_quantity > 0
+
+    @property
+    def effective_stock(self):
+        active_vars = self.variants.filter(is_active=True)
+        if active_vars.exists():
+            return active_vars.aggregate(total=models.Sum('stock_quantity'))['total'] or 0
+        return self.stock_quantity
+
     def __str__(self):
         return self.name
 
@@ -108,6 +138,23 @@ class ProductVariant(models.Model):
         indexes =[
             models.Index(fields=['product','is_active'])
         ]
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        if self.product_id:
+            try:
+                self.product.sync_stock_from_variants()
+            except Exception:
+                pass
+
+    def delete(self, *args, **kwargs):
+        product = self.product
+        super().delete(*args, **kwargs)
+        if product:
+            try:
+                product.sync_stock_from_variants()
+            except Exception:
+                pass
 
     def __str__(self):
         return (
@@ -168,3 +215,26 @@ class ProductVideo(models.Model):
 
     def __str__(self):
         return f'Promotion video for {self.product.name}'
+
+
+from django.db.models.signals import post_save, post_delete
+from django.dispatch import receiver
+
+
+@receiver(post_save, sender=ProductVariant)
+def sync_product_stock_on_variant_save(sender, instance, **kwargs):
+    if instance.product_id:
+        try:
+            instance.product.sync_stock_from_variants()
+        except Exception:
+            pass
+
+
+@receiver(post_delete, sender=ProductVariant)
+def sync_product_stock_on_variant_delete(sender, instance, **kwargs):
+    if instance.product_id:
+        try:
+            instance.product.sync_stock_from_variants()
+        except Exception:
+            pass
+

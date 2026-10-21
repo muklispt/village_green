@@ -1,33 +1,50 @@
 import uuid
 from django.db import transaction
-from django.db.models import Prefetch
+from django.db.models import Prefetch, Exists, OuterRef
 from rest_framework import status
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.filters import SearchFilter, OrderingFilter
 from rest_framework.response import Response
 from rest_framework.viewsets import ModelViewSet
+from adminpanel.permissions import has_admin_scope
 
 from .models import (ProductCategory, Product, ProductVariant,
                      ProductImage, ProductVideo)
 from .pagination import ProductPagination
+from .authentication import SafeStorefrontJWTAuthentication
 from .permissions import IsAdminOrReadOnly
 from .serializers import (ProductCategorySerializer, ProductSerializer,
                            ProductVariantSerializer, ProductImageSerializer,
                            ProductVideoSerializer, ProductListSerializer,
                            ProductDetailSerializer)
-from .validators import validate_product_image_file
+from .validators import validate_product_image_file,MAX_IMAGE_PER_PRODUCT
+
 
 
 class ProductCategoryViewSet(ModelViewSet):
     queryset = ProductCategory.objects.all()
     serializer_class = ProductCategorySerializer
+    authentication_classes = [SafeStorefrontJWTAuthentication]
     permission_classes = [IsAdminOrReadOnly]
+
+
+def is_admin_or_staff(request):
+    user = getattr(request, 'user', None)
+    if not (user and user.is_authenticated):
+        return False
+    return bool(
+        user.is_staff
+        or user.is_superuser
+        or getattr(user, 'role', None) == 'admin'
+        or has_admin_scope(request)
+    )
 
 
 class ProductViewSet(ModelViewSet):
     pagination_class = ProductPagination
     filter_backends = [SearchFilter, OrderingFilter]
+    authentication_classes = [SafeStorefrontJWTAuthentication]
     permission_classes = [IsAdminOrReadOnly]
     ordering_fields = ['price', 'created_at']
     ordering = ['-created_at']
@@ -47,8 +64,13 @@ class ProductViewSet(ModelViewSet):
         return ProductSerializer
 
     def get_queryset(self):
-        is_staff = self.request.user.is_authenticated and self.request.user.is_staff
-        queryset = Product.objects.select_related('product_category', 'promotion_video')
+        is_staff = is_admin_or_staff(self.request)
+        has_variants_subquery = Exists(
+            ProductVariant.objects.filter(product=OuterRef('pk'), is_active=True)
+        )
+        queryset = Product.objects.select_related('product_category', 'promotion_video').annotate(
+            has_active_variants=has_variants_subquery
+        )
 
         if not is_staff:
             queryset = queryset.filter(is_active=True)
@@ -63,31 +85,43 @@ class ProductViewSet(ModelViewSet):
             variant_qs = ProductVariant.objects.all()
 
         category_id = self.request.query_params.get('category')
-        if category_id:
-            try:
-                category_uuid = uuid.UUID(category_id)
-            except ValueError:
-                raise ValidationError({'category': 'Enter a valid category id.'})
-            queryset = queryset.filter(product_category_id=category_uuid)
+        if category_id is not None:
+            category_id = category_id.strip()
+            if category_id and category_id.lower() != 'all':
+                try:
+                    category_uuid = uuid.UUID(category_id)
+                    queryset = queryset.filter(product_category_id=category_uuid)
+                except ValueError:
+                    raise ValidationError({'category': 'Enter a valid category id.'})
 
         primary_image_prefetch = Prefetch(
             'images',
             queryset=ProductImage.objects.filter(is_primary=True),
             to_attr='prefetched_primary_image'
         )
+        variants_prefetch = Prefetch(
+            'variants',
+            queryset=variant_qs
+        )
 
         if self.action == 'list':
-            queryset = queryset.prefetch_related(primary_image_prefetch)
+            if is_staff:
+                queryset = queryset.prefetch_related(
+                    primary_image_prefetch,
+                    variants_prefetch
+                )
+            else:
+                queryset = queryset.prefetch_related(primary_image_prefetch)
         elif self.action == 'retrieve':
             queryset = queryset.prefetch_related(
                 Prefetch('images', queryset=ProductImage.objects.all()),
-                Prefetch('variants', queryset=variant_qs),
+                variants_prefetch,
                 primary_image_prefetch,
             )
         else:
             queryset = queryset.prefetch_related(
                 Prefetch('images', queryset=ProductImage.objects.all()),
-                Prefetch('variants', queryset=variant_qs),
+                variants_prefetch,
                 primary_image_prefetch,
             )
 
@@ -98,6 +132,7 @@ class ProductVariantViewSet(ModelViewSet):
     serializer_class = ProductVariantSerializer
     pagination_class = ProductPagination
     filter_backends = [SearchFilter]
+    authentication_classes = [SafeStorefrontJWTAuthentication]
     permission_classes = [IsAdminOrReadOnly]
 
     search_fields = [
@@ -105,24 +140,33 @@ class ProductVariantViewSet(ModelViewSet):
         'product__name'
     ]
 
+    @property
+    def paginator(self):
+        if self.request and self.request.query_params.get('product'):
+            return None
+        return super().paginator
+
     def get_queryset(self):
         queryset = ProductVariant.objects.select_related('product')
 
-        if not (self.request.user.is_authenticated and self.request.user.is_staff):
+        if not is_admin_or_staff(self.request):
             queryset = queryset.filter(is_active=True, product__is_active=True)
 
         product_id = self.request.query_params.get('product')
-        if product_id:
-            try:
-                product_id = uuid.UUID(product_id)
-            except ValueError:
-                raise ValidationError({'product': 'Enter a valid product id.'})
-            queryset = queryset.filter(product_id=product_id)
+        if product_id is not None:
+            product_id = product_id.strip()
+            if product_id and product_id.lower() != 'all':
+                try:
+                    product_uuid = uuid.UUID(product_id)
+                    queryset = queryset.filter(product_id=product_uuid)
+                except ValueError:
+                    raise ValidationError({'product': 'Enter a valid product id.'})
         return queryset
 
 
 class ProductImageViewSet(ModelViewSet):
     serializer_class = ProductImageSerializer
+    authentication_classes = [SafeStorefrontJWTAuthentication]
     permission_classes = [IsAdminOrReadOnly]
     pagination_class = ProductPagination
     filter_backends = [SearchFilter]
@@ -135,12 +179,14 @@ class ProductImageViewSet(ModelViewSet):
             queryset = queryset.filter(product__is_active=True)
 
         product_id = self.request.query_params.get('product')
-        if product_id:
-            try:
-                product_uuid = uuid.UUID(product_id)
-            except ValueError:
-                raise ValidationError({'product': 'Enter a valid product id.'})
-            queryset = queryset.filter(product_id=product_uuid)
+        if product_id is not None:
+            product_id = product_id.strip()
+            if product_id and product_id.lower() != 'all':
+                try:
+                    product_uuid = uuid.UUID(product_id)
+                    queryset = queryset.filter(product_id=product_uuid)
+                except ValueError:
+                    raise ValidationError({'product': 'Enter a valid product id.'})
 
         return queryset
 
@@ -247,6 +293,7 @@ ProductImagViewSet = ProductImageViewSet
 
 class ProductVideoViewSet(ModelViewSet):
     serializer_class = ProductVideoSerializer
+    authentication_classes = [SafeStorefrontJWTAuthentication]
     permission_classes = [IsAdminOrReadOnly]
     pagination_class = ProductPagination
     filter_backends = [SearchFilter]
@@ -260,12 +307,14 @@ class ProductVideoViewSet(ModelViewSet):
             queryset = queryset.filter(product__is_active=True)
 
         product_id = self.request.query_params.get('product')
-        if product_id:
-            try:
-                product_uuid = uuid.UUID(product_id)
-                queryset = queryset.filter(product_id=product_uuid)
-            except ValueError:
-                raise ValidationError({'product': 'Enter a valid product id.'})
+        if product_id is not None:
+            product_id = product_id.strip()
+            if product_id and product_id.lower() != 'all':
+                try:
+                    product_uuid = uuid.UUID(product_id)
+                    queryset = queryset.filter(product_id=product_uuid)
+                except ValueError:
+                    raise ValidationError({'product': 'Enter a valid product id.'})
 
         return queryset.order_by('-created_at')
 

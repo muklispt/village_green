@@ -1,4 +1,5 @@
 from rest_framework.permissions import BasePermission,SAFE_METHODS
+from adminpanel.permissions import has_admin_scope
 
 class IsAdminOrReadOnly(BasePermission):
 
@@ -7,4 +8,7 @@ class IsAdminOrReadOnly(BasePermission):
             return True
 
         user  = request.user
-        return (user.is_authenticated and user.is_active and user.is_staff)
+        return (user.is_authenticated
+                and user.is_active
+                and user.is_staff
+                and has_admin_scope(request))
