@@ -1,17 +1,19 @@
 from pathlib import Path
-from PIL import Image
+from PIL import Image,UnidentifiedImageError
 from rest_framework.exceptions import ValidationError
 
 
 ALLOWED_IMAGE_FORMATS = {'JPEG', 'PNG', 'WEBP'}
 MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024  # 5MB
-MAX_DIMENSION_PX = 6000  # 6000px
+MAX_IMAGE_SIDE = 6000  # 6000px
 
 ALLOWED_VIDEO_EXTENSIONS = {'.mp4', '.webm'}
 MAX_VIDEO_SIZE_BYTES = 50 * 1024 * 1024  # 50MB
 MP4_MAGIC_BYTES = b'ftyp'
 WEBM_MAGIC_BYTES = b'\x1a\x45\xdf\xa3'
 
+MAX_IMAGES_PER_PRODUCT = 10
+MAX_IMAGE_PER_PRODUCT = MAX_IMAGES_PER_PRODUCT
 
 def validate_product_image_file(file):
     """
@@ -29,8 +31,8 @@ def validate_product_image_file(file):
         img_format = (img.format or '').upper()
         width, height = img.size
         img.verify()
-    except Exception as exc:
-        raise ValidationError(f"Invalid or corrupted image file: {str(exc)}")
+    except (UnidentifiedImageError,OSError,SyntaxError,ValueError):
+        raise ValidationError("upload a valid image file.")
     finally:
         if hasattr(file, 'seek'):
             file.seek(0)
@@ -38,7 +40,7 @@ def validate_product_image_file(file):
     if img_format not in ALLOWED_IMAGE_FORMATS:
         raise ValidationError("Only JPEG, PNG, and WebP images are allowed.")
 
-    if width > MAX_DIMENSION_PX or height > MAX_DIMENSION_PX:
+    if max(width,height)> MAX_IMAGE_SIDE:
         raise ValidationError("Image dimensions must not exceed 6000px in width or height.")
 
     return file

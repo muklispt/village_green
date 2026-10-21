@@ -309,7 +309,15 @@ export const AuthProvider = ({ children }) => {
     });
   }, []);
 
-  const logout = useCallback(() => {
+  const logout = useCallback(async () => {
+    const refreshToken = localStorage.getItem("refresh_token");
+    if (refreshToken) {
+      try {
+        await api.post("/account/logout/", { refresh: refreshToken });
+      } catch {
+        // Silently tolerate network/token expiration errors on logout
+      }
+    }
     localStorage.removeItem("access_token");
     localStorage.removeItem("refresh_token");
     localStorage.removeItem("user");

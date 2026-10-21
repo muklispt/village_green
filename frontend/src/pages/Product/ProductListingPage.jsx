@@ -111,7 +111,10 @@ export default function ProductListingPage() {
 
     // Filter by stock
     if (inStockOnly) {
-      list = list.filter((p) => (p.stock_quantity || 0) > 0);
+      list = list.filter((p) => {
+        if (p.is_in_stock !== undefined) return Boolean(p.is_in_stock);
+        return (Number(p.stock_quantity) || 0) > 0;
+      });
     }
 
     // Filter by price

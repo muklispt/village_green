@@ -42,7 +42,7 @@ ALLOWED_HOSTS = [
 ]
 CORS_ALLOWED_ORIGINS = [
     origin.strip()
-    for origin in os.getenv('CORS_ALLOWED_ORIGINS', 'http://localhost:5173').split(',')
+    for origin in os.getenv('CORS_ALLOWED_ORIGINS', 'http://localhost:5173,http://localhost:5174,http://127.0.0.1:5173,http://127.0.0.1:5174').split(',')
     if origin.strip()
 ]
 
@@ -72,6 +72,7 @@ INSTALLED_APPS = [
     'corsheaders',
     'account',
     'product',
+    'adminpanel',
 ]
 
 # simple jwt and permmision config 
@@ -94,6 +95,10 @@ REST_FRAMEWORK = {
         "forgot-password": "5/minute",
         "reset-password": "5/minute",
         "google-login": "10/minute",
+        "change-password": "5/minute",
+        "profile": "30/minute",
+        'admin-login':'5/minute',
+        'admin-refresh':'30/minute',
     },
 }
 
@@ -114,7 +119,7 @@ SIMPLE_JWT = {
 }
 
 MIDDLEWARE = [
-    
+    'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -122,7 +127,6 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
-    'corsheaders.middleware.CorsMiddleware',
 ]
 
 ROOT_URLCONF = 'config.urls'
@@ -254,3 +258,19 @@ LOGGING = {
         },
     },
 }
+
+# ---- Admin panel security (separate admin login) ----
+# The refresh cookie is sent cross-origin from the admin app, so credentials are allowed.
+# This is safe only because CORS_ALLOWED_ORIGINS is an explicit list, never "*".
+CORS_ALLOW_CREDENTIALS = True
+from corsheaders.defaults import default_headers
+CORS_ALLOW_HEADERS = list(default_headers) + ['x-admin-panel']
+
+ADMIN_ACCESS_TOKEN_LIFETIME = timedelta(minutes=10)
+ADMIN_REFRESH_TOKEN_LIFETIME = timedelta(hours=8)
+ADMIN_LOCKOUT_WINDOW = timedelta(minutes=15)
+ADMIN_MAX_FAILURES_PER_EMAIL = 5
+ADMIN_MAX_FAILURES_PER_IP = 20
+# Django's built-in /admin/ is a second login page. Change this path in production,
+# for example DJANGO_ADMIN_PATH=manage-8f3k/
+DJANGO_ADMIN_PATH = os.getenv('DJANGO_ADMIN_PATH', 'admin/')

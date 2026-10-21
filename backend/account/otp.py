@@ -52,12 +52,12 @@ def verify_otp(user, plain_otp):
 
     if not otp_obj:
         raise serializers.ValidationError({
-            'otp': 'Invalid or expired OTP.'
+            'otp': 'Invalid or expired verification code.'
         })
 
     if otp_obj.is_expired:
         raise serializers.ValidationError({
-            'otp': 'OTP has expired.'
+            'otp': 'Invalid or expired verification code.'
         })
 
     if not check_password(plain_otp, otp_obj.otp):
@@ -73,7 +73,7 @@ def verify_otp(user, plain_otp):
             })
 
         raise serializers.ValidationError({
-            'otp': 'Invalid OTP.'
+            'otp': 'Invalid or expired verification code.'
         })
 
     return otp_obj

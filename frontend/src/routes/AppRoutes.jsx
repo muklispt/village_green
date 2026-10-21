@@ -10,6 +10,11 @@ import ForgotPassword from "../pages/Auth/ForgotPassword";
 import ResetPassword from "../pages/Auth/ResetPassword";
 import Profile from "../pages/Profile/Profile";
 import PrivateRoute from "../components/PrivateRoute";
+import AdminRoute from "../components/admin/AdminRoute";
+import AdminLogin from "../pages/Admin/AdminLogin";
+import AdminDashboard from "../pages/Admin/AdminDashboard";
+import AdminCustomers from "../pages/Admin/AdminCustomers";
+import AdminProducts from "../pages/Admin/AdminProducts";
 
 /**
  * Main application routes
@@ -32,6 +37,13 @@ export default function AppRoutes() {
       <Route path="/reset-password/:uid/:token" element={<ResetPassword />} />
       <Route path="/reset-password/:uid/:token/" element={<ResetPassword />} />
       <Route path="/profile" element={<PrivateRoute><Profile /></PrivateRoute>} />
+
+      {/* Admin Panel Routes */}
+      <Route path="/admin/login" element={<AdminLogin />} />
+      <Route path="/admin" element={<AdminRoute><AdminDashboard /></AdminRoute>} />
+      <Route path="/admin/dashboard" element={<AdminRoute><AdminDashboard /></AdminRoute>} />
+      <Route path="/admin/customers" element={<AdminRoute><AdminCustomers /></AdminRoute>} />
+      <Route path="/admin/products" element={<AdminRoute><AdminProducts /></AdminRoute>} />
 
       {/* Catch-all */}
       <Route path="*" element={<Navigate to="/" replace />} />

@@ -19,12 +19,11 @@ import Footer from "../../components/layout/Footer";
 import Breadcrumb from "../../components/common/Breadcrumb";
 import QuantitySelector from "../../components/common/QuantitySelector";
 import ProductCard from "../../components/product/ProductCard";
+import ProductMediaGallery from "../../components/product/ProductMediaGallery";
 import useCart from "../../context/CartContext";
 import {
   getProductDetailsComplete,
   getProducts,
-  resolveImageUrl,
-  resolveMediaUrl,
   formatPrice,
   formatVariantLabel,
   calculateDiscount,
@@ -123,43 +122,6 @@ export default function ProductDetailsPage() {
     }
   };
 
-  // Build the complete list of gallery images
-  const galleryImages = useMemo(() => {
-    if (!product) return [];
-    const list = [];
-    const seenUrls = new Set();
-
-    if (Array.isArray(product.images) && product.images.length > 0) {
-      product.images.forEach((imgObj) => {
-        const url = imgObj.image;
-        if (url && !seenUrls.has(url)) {
-          seenUrls.add(url);
-          list.push({
-            id: imgObj.id,
-            url,
-            is_primary: Boolean(imgObj.is_primary),
-          });
-        }
-      });
-    }
-
-    // Include the base product image if not already in gallery
-    if (product.product_img && !seenUrls.has(product.product_img)) {
-      list.unshift({
-        id: "base-product-img",
-        url: product.product_img,
-        is_primary: list.length === 0,
-      });
-    }
-
-    return list;
-  }, [product]);
-
-  // Video URL resolution
-  const videoUrl = useMemo(() => {
-    if (!product?.video?.video) return null;
-    return resolveMediaUrl(product.video.video);
-  }, [product]);
 
   if (loading) {
     return (
@@ -214,15 +176,25 @@ export default function ProductDetailsPage() {
   }
 
   // Stock, price, MRP, and discount calculations
+  const hasVariants = Array.isArray(product?.variants) && product.variants.length > 0;
+  const anyVariantInStock = hasVariants && product.variants.some(
+    (v) => (v.stock_quantity || 0) > 0 && v.is_active !== false
+  );
+
   const inStock = selectedVariant
     ? (selectedVariant.stock_quantity || 0) > 0 && selectedVariant.is_active !== false
-    : (product.stock_quantity || 0) > 0;
+    : (hasVariants
+        ? anyVariantInStock
+        : (product?.is_in_stock !== undefined ? product.is_in_stock : (product?.stock_quantity || 0) > 0));
 
   const currentStockQuantity = selectedVariant
     ? selectedVariant.stock_quantity
-    : product.stock_quantity;
+    : (hasVariants
+        ? product.variants.reduce((acc, v) => acc + (v.is_active !== false ? (v.stock_quantity || 0) : 0), 0)
+        : product?.stock_quantity);
 
   const maxStock = Math.max(1, currentStockQuantity || 1);
+  const hasVideo = Boolean(product?.video?.video || product?.promotion_video?.video);
 
   const displayPrice = selectedVariant
     ? parseFloat(selectedVariant.price) || 0
@@ -236,7 +208,6 @@ export default function ProductDetailsPage() {
     : product.unit || "unit";
 
   const subtotal = (displayPrice * quantity).toFixed(2);
-  const activeImageUrl = resolveImageUrl(selectedImage || product.product_img);
 
   const handleAddToCart = () => {
     if (!inStock) return;
@@ -279,111 +250,27 @@ export default function ProductDetailsPage() {
 
           {/* Product Overview Section */}
           <section className="gv-details-grid">
-            {/* Left: Product Gallery / Image / Video */}
-            <div className="gv-details-gallery">
-              <div className="gv-details-main-img-box">
-                {mediaMode === "video" && videoUrl ? (
-                  <div className="gv-details-video-wrapper">
-                    <video
-                      controls
-                      playsInline
-                      preload="metadata"
-                      className="gv-details-video-player"
-                      poster={activeImageUrl}
-                      title={product.video?.title || `${product.name} Promotional Video`}
-                    >
-                      <source src={videoUrl} type="video/mp4" />
-                      Your browser does not support HTML5 video playback.
-                    </video>
-                    <button
-                      type="button"
-                      className="gv-details-video-close-btn"
-                      onClick={() => setMediaMode("image")}
-                      title="Back to product photos"
-                      aria-label="Back to product photos"
-                    >
-                      Back to Photos
-                    </button>
-                  </div>
-                ) : (
-                  <>
-                    <img
-                      src={activeImageUrl}
-                      alt={product.name}
-                      className="gv-details-main-img"
-                      onError={(e) => {
-                        e.target.onerror = null;
-                        e.target.src =
-                          "https://images.unsplash.com/photo-1610832958506-aa56368176cf?auto=format&fit=crop&w=800&q=80";
-                      }}
-                    />
-                    {inStock ? (
-                      <span className="gv-details-badge-organic">
-                        <ShieldCheck size={14} /> 100% Certified Organic
-                      </span>
-                    ) : (
-                      <span className="gv-badge-soldout">Sold Out</span>
-                    )}
-                  </>
-                )}
-              </div>
-
-              {/* Thumbnails Row (Multiple Images + Promotional Video) */}
-              {(galleryImages.length > 1 || videoUrl) && (
-                <div
-                  className="gv-details-thumbnails-strip"
-                  role="tablist"
-                  aria-label="Product media previews"
-                >
-                  {galleryImages.map((imgItem) => {
-                    const resolvedThumbUrl = resolveImageUrl(imgItem.url);
-                    const isActive =
-                      mediaMode === "image" &&
-                      (selectedImage === imgItem.url ||
-                        (!selectedImage && imgItem.is_primary));
-
-                    return (
-                      <button
-                        key={imgItem.id || imgItem.url}
-                        type="button"
-                        className={`gv-details-thumbnail-btn ${isActive ? "is-active" : ""}`}
-                        onClick={() => {
-                          setSelectedImage(imgItem.url);
-                          setMediaMode("image");
-                        }}
-                        aria-label={`View photo ${imgItem.is_primary ? "(Primary)" : ""}`}
-                        aria-selected={isActive}
-                      >
-                        <img
-                          src={resolvedThumbUrl}
-                          alt={`${product.name} preview`}
-                          className="gv-details-thumbnail-img"
-                        />
-                      </button>
-                    );
-                  })}
-
-                  {/* Promotional Video Thumbnail */}
-                  {videoUrl && (
-                    <button
-                      type="button"
-                      className={`gv-details-thumbnail-btn gv-details-video-thumb-btn ${
-                        mediaMode === "video" ? "is-active" : ""
-                      }`}
-                      onClick={() => setMediaMode("video")}
-                      aria-label="Play promotional video"
-                      aria-selected={mediaMode === "video"}
-                      title={product.video?.title || "Watch promotional video"}
-                    >
-                      <div className="gv-video-thumb-inner">
-                        <Play size={18} fill="currentColor" />
-                        <span>Video</span>
-                      </div>
-                    </button>
-                  )}
-                </div>
-              )}
-            </div>
+            {/* Left: Product Media Gallery (Hover Zoom + Auto Slider + Image/Video Sequence) */}
+            <ProductMediaGallery
+              key={product.id}
+              images={product.images}
+              video={product.video || product.promotion_video}
+              productImg={product.product_img}
+              productName={product.name}
+              imageDuration={3000}
+              inStock={inStock}
+              zoomScale={2.2}
+              activeImageUrl={selectedImage}
+              mediaMode={mediaMode}
+              onActiveMediaChange={(activeItem) => {
+                if (activeItem.type === "image") {
+                  setSelectedImage(activeItem.url);
+                  setMediaMode("image");
+                } else if (activeItem.type === "video") {
+                  setMediaMode("video");
+                }
+              }}
+            />
 
             {/* Right: Product Details & Purchase Actions */}
             <div className="gv-details-info">
@@ -533,7 +420,7 @@ export default function ProductDetailsPage() {
               </div>
 
               {/* Promotional Video Notice Card (if video available and not yet playing) */}
-              {videoUrl && mediaMode !== "video" && (
+              {hasVideo && mediaMode !== "video" && (
                 <div className="gv-details-video-banner">
                   <div className="gv-video-banner-info">
                     <Film size={18} className="gv-video-banner-icon" />

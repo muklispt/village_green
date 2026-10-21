@@ -792,4 +792,443 @@ class ProductVideoAPITestCase(ProductAPIBase):
         res_unauth = self.client.post('/api/v1/product/videos/', {'product': str(self.product.id)})
         self.assertEqual(res_unauth.status_code, status.HTTP_401_UNAUTHORIZED)
 
+    def test_invalid_or_expired_bearer_token_gracefully_allows_storefront_get(self):
+        # Even if client sends an expired/invalid token in Authorization header,
+        # safe GET browsing on categories and products must succeed with 200 OK
+        invalid_headers = {'HTTP_AUTHORIZATION': 'Bearer an.invalid.token'}
+
+        res_cat = self.client.get('/api/v1/product/categories/', **invalid_headers)
+        self.assertEqual(res_cat.status_code, status.HTTP_200_OK)
+
+        res_prod = self.client.get('/api/v1/product/products/', **invalid_headers)
+        self.assertEqual(res_prod.status_code, status.HTTP_200_OK)
+
+        # Mutating endpoints must STILL reject invalid/expired token with 401 Unauthorized
+        res_post_cat = self.client.post(
+            '/api/v1/product/categories/',
+            {'name': 'Hack Category'},
+            **invalid_headers
+        )
+        self.assertEqual(res_post_cat.status_code, status.HTTP_401_UNAUTHORIZED)
+
+        res_post_prod = self.client.post(
+            '/api/v1/product/products/',
+            {'name': 'Hack Product'},
+            **invalid_headers
+        )
+        self.assertEqual(res_post_prod.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+class ProductVariantStockSynchronizationTestCase(ProductAPIBase):
+    def setUp(self):
+        super().setUp()
+        self.category = ProductCategory.objects.create(name='Pantry Essentials')
+
+    def test_stock_flow_create_product_stock_zero_then_add_variant_stock_five(self):
+        # 1. Create a product without variants with stock 0
+        product = Product.objects.create(
+            product_category=self.category,
+            name='Himalayan Rock Salt',
+            price=Decimal('120.00'),
+            stock_quantity=0,
+            unit='kg',
+            is_active=True
+        )
+
+        # Confirm product initially has 0 stock and is not in stock
+        self.assertEqual(product.stock_quantity, 0)
+        self.assertFalse(product.is_in_stock)
+
+        # Verify via detail API
+        detail_res = self.client.get(f'/api/v1/product/products/{product.id}/')
+        self.assertEqual(detail_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(detail_res.data['stock_quantity'], 0)
+        self.assertFalse(detail_res.data['is_in_stock'])
+
+        # Verify via list API
+        list_res = self.client.get(f'/api/v1/product/products/?search={product.name}')
+        self.assertEqual(list_res.status_code, status.HTTP_200_OK)
+        item = next(p for p in list_res.data['results'] if p['id'] == str(product.id))
+        self.assertEqual(item['stock_quantity'], 0)
+        self.assertFalse(item['is_in_stock'])
+
+        # 2. Add a 500 g variant with stock 5 via API or model
+        variant = ProductVariant.objects.create(
+            product=product,
+            sku='HRS-500G',
+            quantity=Decimal('500'),
+            unit='g',
+            price=Decimal('65.00'),
+            mrp=Decimal('70.00'),
+            stock_quantity=5,
+            is_active=True
+        )
+
+        # 3. Confirm API returns correct variant stock
+        v_res = self.client.get(f'/api/v1/product/variants/{variant.id}/')
+        self.assertEqual(v_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(v_res.data['stock_quantity'], 5)
+
+        # 4. Confirm product is available when at least one variant has stock
+        product.refresh_from_db()
+        self.assertEqual(product.stock_quantity, 5)
+        self.assertTrue(product.is_in_stock)
+
+        # Check detail API
+        detail_res2 = self.client.get(f'/api/v1/product/products/{product.id}/')
+        self.assertEqual(detail_res2.status_code, status.HTTP_200_OK)
+        self.assertEqual(detail_res2.data['stock_quantity'], 5)
+        self.assertTrue(detail_res2.data['is_in_stock'])
+        self.assertTrue(detail_res2.data['has_variants'])
+
+        # Check list API
+        list_res2 = self.client.get(f'/api/v1/product/products/?search={product.name}')
+        self.assertEqual(list_res2.status_code, status.HTTP_200_OK)
+        item2 = next(p for p in list_res2.data['results'] if p['id'] == str(product.id))
+        self.assertEqual(item2['stock_quantity'], 5)
+        self.assertTrue(item2['is_in_stock'])
+        self.assertTrue(item2['has_variants'])
+
+        # 5. Add second variant with stock 0; product is STILL in stock because variant 1 has stock 5
+        variant2 = ProductVariant.objects.create(
+            product=product,
+            sku='HRS-1KG',
+            quantity=Decimal('1'),
+            unit='kg',
+            price=Decimal('120.00'),
+            mrp=Decimal('130.00'),
+            stock_quantity=0,
+            is_active=True
+        )
+        product.refresh_from_db()
+        self.assertEqual(product.stock_quantity, 5)
+        self.assertTrue(product.is_in_stock)
+
+        # 6. Update variant 1's stock from 5 to 0 -> now all variants have stock 0 -> product is out of stock
+        variant.stock_quantity = 0
+        variant.save()
+        product.refresh_from_db()
+        self.assertEqual(product.stock_quantity, 0)
+        self.assertFalse(product.is_in_stock)
+
+        detail_res3 = self.client.get(f'/api/v1/product/products/{product.id}/')
+        self.assertEqual(detail_res3.data['stock_quantity'], 0)
+        self.assertFalse(detail_res3.data['is_in_stock'])
+
+    def test_updating_product_with_nested_variants_without_duplicating(self):
+        self.client.force_authenticate(user=self.admin)
+        # Create product with nested variants
+        payload = {
+            'product_category': str(self.category.id),
+            'name': 'Cold Pressed Mustard Oil',
+            'price': '220.00',
+            'stock_quantity': 0,
+            'unit': 'l',
+            'variants': [
+                {
+                    'sku': 'OIL-500ML',
+                    'quantity': '500',
+                    'unit': 'ml',
+                    'price': '115.00',
+                    'mrp': '125.00',
+                    'stock_quantity': 8,
+                    'is_active': True,
+                },
+                {
+                    'sku': 'OIL-1L',
+                    'quantity': '1',
+                    'unit': 'l',
+                    'price': '220.00',
+                    'mrp': '240.00',
+                    'stock_quantity': 12,
+                    'is_active': True,
+                }
+            ]
+        }
+        res = self.client.post('/api/v1/product/products/', payload, format='json')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        prod_id = res.data['id']
+        self.assertEqual(res.data['stock_quantity'], 20)  # 8 + 12
+        self.assertTrue(res.data['is_in_stock'])
+
+        # Update product without duplicating variants
+        update_payload = {
+            'variants': [
+                {
+                    'sku': 'OIL-500ML',
+                    'quantity': '500',
+                    'unit': 'ml',
+                    'price': '115.00',
+                    'mrp': '125.00',
+                    'stock_quantity': 10,
+                    'is_active': True,
+                }
+            ]
+        }
+        res_update = self.client.patch(f'/api/v1/product/products/{prod_id}/', update_payload, format='json')
+        self.assertEqual(res_update.status_code, status.HTTP_200_OK)
+
+        # Confirm no duplicate variants created for OIL-500ML
+        product = Product.objects.get(id=prod_id)
+        self.assertEqual(product.variants.filter(sku='OIL-500ML').count(), 1)
+        self.assertEqual(product.variants.count(), 2)
+        # 10 + 12 = 22 total variant stock
+        self.assertEqual(product.stock_quantity, 22)
+
+
+class AdminProductVariantsAPITestCase(ProductAPIBase):
+    """
+    Tests ensuring product variants are properly represented in Admin API responses,
+    created, updated, and deleted with data integrity preserved.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.client.force_authenticate(user=self.admin)
+        self.category = ProductCategory.objects.create(name="Farm Harvest")
+
+    def test_case_1_product_with_no_variants(self):
+        product = Product.objects.create(
+            product_category=self.category,
+            name="Raw Honey",
+            price=Decimal('250.00'),
+            stock_quantity=15,
+            unit="piece"
+        )
+        # Check list endpoint for admin
+        res_list = self.client.get('/api/v1/product/products/', HTTP_X_ADMIN_PANEL='1')
+        self.assertEqual(res_list.status_code, status.HTTP_200_OK)
+        target = next(item for item in res_list.data['results'] if item['id'] == str(product.id))
+        self.assertEqual(target['variants'], [])
+        self.assertEqual(target['variants_count'], 0)
+        self.assertFalse(target['has_variants'])
+        self.assertEqual(target['stock_quantity'], 15)
+
+        # Check detail endpoint
+        res_detail = self.client.get(f'/api/v1/product/products/{product.id}/', HTTP_X_ADMIN_PANEL='1')
+        self.assertEqual(res_detail.status_code, status.HTTP_200_OK)
+        self.assertEqual(res_detail.data['variants'], [])
+        self.assertEqual(res_detail.data['variants_count'], 0)
+        self.assertFalse(res_detail.data['has_variants'])
+
+    def test_case_2_product_with_one_variant(self):
+        product = Product.objects.create(
+            product_category=self.category,
+            name="Organic Ghee",
+            price=Decimal('350.00'),
+            stock_quantity=0,
+            unit="l"
+        )
+        variant = ProductVariant.objects.create(
+            product=product,
+            sku="GHEE-500ML",
+            quantity=Decimal('500'),
+            unit="ml",
+            price=Decimal('350.00'),
+            mrp=Decimal('380.00'),
+            stock_quantity=10,
+            is_active=True
+        )
+
+        res_list = self.client.get('/api/v1/product/products/', HTTP_X_ADMIN_PANEL='1')
+        self.assertEqual(res_list.status_code, status.HTTP_200_OK)
+        target = next(item for item in res_list.data['results'] if item['id'] == str(product.id))
+        self.assertEqual(target['variants_count'], 1)
+        self.assertEqual(len(target['variants']), 1)
+        self.assertEqual(target['variants'][0]['sku'], "GHEE-500ML")
+        self.assertEqual(target['variants'][0]['stock_quantity'], 10)
+        self.assertTrue(target['has_variants'])
+        self.assertEqual(target['stock_quantity'], 10)
+
+    def test_case_3_product_with_multiple_variants(self):
+        # Specific test case: 500g at ₹60, Stock 5 and 1kg at ₹110, Stock 10
+        product = Product.objects.create(
+            product_category=self.category,
+            name="Fresh Organic Wheat Flour",
+            price=Decimal('60.00'),
+            stock_quantity=0,
+            unit="kg"
+        )
+        v1 = ProductVariant.objects.create(
+            product=product,
+            sku="WHEAT-500G",
+            quantity=Decimal('500'),
+            unit="g",
+            price=Decimal('60.00'),
+            mrp=Decimal('70.00'),
+            stock_quantity=5,
+            is_active=True
+        )
+        v2 = ProductVariant.objects.create(
+            product=product,
+            sku="WHEAT-1KG",
+            quantity=Decimal('1'),
+            unit="kg",
+            price=Decimal('110.00'),
+            mrp=Decimal('125.00'),
+            stock_quantity=10,
+            is_active=True
+        )
+
+        # Verify list response contains both variants with full metadata
+        res = self.client.get('/api/v1/product/products/', HTTP_X_ADMIN_PANEL='1')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        target = next(item for item in res.data['results'] if item['id'] == str(product.id))
+        self.assertEqual(target['variants_count'], 2)
+        self.assertEqual(len(target['variants']), 2)
+
+        skus = {v['sku']: v for v in target['variants']}
+        self.assertIn("WHEAT-500G", skus)
+        self.assertIn("WHEAT-1KG", skus)
+        self.assertEqual(Decimal(str(skus["WHEAT-500G"]['price'])), Decimal('60.00'))
+        self.assertEqual(skus["WHEAT-500G"]['stock_quantity'], 5)
+        self.assertEqual(Decimal(str(skus["WHEAT-1KG"]['price'])), Decimal('110.00'))
+        self.assertEqual(skus["WHEAT-1KG"]['stock_quantity'], 10)
+
+        # Effective inventory stock is 5 + 10 = 15
+        self.assertEqual(target['stock_quantity'], 15)
+
+    def test_case_4_creating_new_variant_via_api(self):
+        product = Product.objects.create(
+            product_category=self.category,
+            name="Organic Mustard Oil",
+            price=Decimal('100.00'),
+            stock_quantity=0,
+            unit="l"
+        )
+
+        payload = {
+            'product': str(product.id),
+            'sku': 'MUST-1L',
+            'quantity': '1',
+            'unit': 'l',
+            'price': '190.00',
+            'mrp': '210.00',
+            'stock_quantity': 25,
+            'is_active': True
+        }
+        res = self.client.post('/api/v1/product/variants/', payload, format='json')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        variant_id = res.data['id']
+
+        # Confirm variant exists in DB
+        variant = ProductVariant.objects.get(id=variant_id)
+        self.assertEqual(variant.sku, 'MUST-1L')
+        self.assertEqual(variant.stock_quantity, 25)
+
+        # Confirm product stock synchronized to 25
+        product.refresh_from_db()
+        self.assertEqual(product.stock_quantity, 25)
+
+    def test_case_5_editing_existing_variant(self):
+        product = Product.objects.create(
+            product_category=self.category,
+            name="Organic Rice",
+            price=Decimal('80.00'),
+            stock_quantity=0,
+            unit="kg"
+        )
+        variant = ProductVariant.objects.create(
+            product=product,
+            sku="RICE-1KG",
+            quantity=Decimal('1'),
+            unit="kg",
+            price=Decimal('80.00'),
+            mrp=Decimal('90.00'),
+            stock_quantity=10,
+            is_active=True
+        )
+
+        # Edit variant: update price, mrp, stock
+        update_data = {
+            'price': '85.00',
+            'mrp': '95.00',
+            'stock_quantity': 18,
+            'is_active': True,
+        }
+        res = self.client.patch(f'/api/v1/product/variants/{variant.id}/', update_data, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(Decimal(str(res.data['price'])), Decimal('85.00'))
+        self.assertEqual(res.data['stock_quantity'], 18)
+
+        # Confirm DB updated and no duplicate variant was created
+        self.assertEqual(ProductVariant.objects.filter(product=product).count(), 1)
+        variant.refresh_from_db()
+        self.assertEqual(variant.price, Decimal('85.00'))
+        self.assertEqual(variant.stock_quantity, 18)
+
+        # Check product synced stock
+        product.refresh_from_db()
+        self.assertEqual(product.stock_quantity, 18)
+
+    def test_case_6_deleting_variant_and_preservation(self):
+        product = Product.objects.create(
+            product_category=self.category,
+            name="Spiced Tea",
+            price=Decimal('50.00'),
+            stock_quantity=0,
+            unit="pack"
+        )
+        v1 = ProductVariant.objects.create(
+            product=product,
+            sku="TEA-100G",
+            quantity=Decimal('100'),
+            unit="g",
+            price=Decimal('50.00'),
+            mrp=Decimal('60.00'),
+            stock_quantity=7,
+            is_active=True
+        )
+        v2 = ProductVariant.objects.create(
+            product=product,
+            sku="TEA-250G",
+            quantity=Decimal('250'),
+            unit="g",
+            price=Decimal('115.00'),
+            mrp=Decimal('130.00'),
+            stock_quantity=9,
+            is_active=True
+        )
+
+        # Delete v1
+        res = self.client.delete(f'/api/v1/product/variants/{v1.id}/')
+        self.assertEqual(res.status_code, status.HTTP_204_NO_CONTENT)
+
+        # v2 remains preserved
+        self.assertTrue(ProductVariant.objects.filter(id=v2.id).exists())
+        self.assertFalse(ProductVariant.objects.filter(id=v1.id).exists())
+
+        # Product stock syncs to 9
+        product.refresh_from_db()
+        self.assertEqual(product.stock_quantity, 9)
+
+    def test_case_7_querying_variants_by_product_returns_untruncated_list(self):
+        product = Product.objects.create(
+            product_category=self.category,
+            name="Assorted Seeds",
+            price=Decimal('30.00'),
+            stock_quantity=0,
+            unit="pack"
+        )
+        # Create 12 variants to test that pagination does not truncate when querying by product
+        for i in range(12):
+            ProductVariant.objects.create(
+                product=product,
+                sku=f"SEED-VAR-{i}",
+                quantity=Decimal(f"{i + 1}"),
+                unit="pack",
+                price=Decimal('30.00') + Decimal(f"{i * 5}"),
+                mrp=Decimal('40.00') + Decimal(f"{i * 5}"),
+                stock_quantity=5,
+                is_active=True
+            )
+
+        res = self.client.get(f'/api/v1/product/variants/?product={product.id}', HTTP_X_ADMIN_PANEL='1')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        # Paginator is None when filtering by product, so it returns all 12 variants directly
+        self.assertEqual(len(res.data), 12)
+
+
+
+
 

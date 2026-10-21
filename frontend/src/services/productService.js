@@ -130,7 +130,14 @@ export async function getProducts({ search = "", page = 1, pageSize, categoryId 
     if (pageSize) {
       params.page_size = pageSize;
     }
-    if (categoryId && categoryId.trim()) {
+    if (
+      categoryId &&
+      typeof categoryId === "string" &&
+      categoryId.trim() &&
+      categoryId.trim().toLowerCase() !== "all" &&
+      categoryId.trim().toLowerCase() !== "undefined" &&
+      categoryId.trim().toLowerCase() !== "null"
+    ) {
       params.category = categoryId.trim();
     }
 
@@ -178,6 +185,9 @@ export async function getProducts({ search = "", page = 1, pageSize, categoryId 
  * @returns {Promise<Object>}
  */
 export async function getProductById(id) {
+  if (!id || id === "undefined" || id === "null") {
+    throw new Error("Invalid product id");
+  }
   try {
     const response = await api.get(`/product/products/${id}/`, {
       _skipAuthRedirect: true,
@@ -229,7 +239,7 @@ export function calculateDiscount(price, mrp) {
  * @returns {Promise<Array>}
  */
 export async function getProductImages(productId) {
-  if (!productId) return [];
+  if (!productId || productId === "undefined" || productId === "null" || productId === "all") return [];
   try {
     const response = await api.get("/product/product-images/", {
       params: { product: productId },
@@ -262,7 +272,7 @@ export async function getProductImages(productId) {
  * @returns {Promise<Object|null>}
  */
 export async function getProductVideo(productId) {
-  if (!productId) return null;
+  if (!productId || productId === "undefined" || productId === "null" || productId === "all") return null;
   try {
     const response = await api.get("/product/product-videos/", {
       params: { product: productId },
@@ -289,7 +299,7 @@ export async function getProductVideo(productId) {
  * @returns {Promise<Array>}
  */
 export async function getProductVariants(productId) {
-  if (!productId) return [];
+  if (!productId || productId === "undefined" || productId === "null" || productId === "all") return [];
   try {
     const response = await api.get("/product/variants/", {
       params: { product: productId },
