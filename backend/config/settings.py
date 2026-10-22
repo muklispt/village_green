@@ -73,6 +73,7 @@ INSTALLED_APPS = [
     'account',
     'product',
     'adminpanel',
+    'cart',
 ]
 
 # simple jwt and permmision config 
@@ -99,6 +100,7 @@ REST_FRAMEWORK = {
         "profile": "30/minute",
         'admin-login':'5/minute',
         'admin-refresh':'30/minute',
+        'cart':'120/minute',
     },
 }
 
@@ -274,3 +276,7 @@ ADMIN_MAX_FAILURES_PER_IP = 20
 # Django's built-in /admin/ is a second login page. Change this path in production,
 # for example DJANGO_ADMIN_PATH=manage-8f3k/
 DJANGO_ADMIN_PATH = os.getenv('DJANGO_ADMIN_PATH', 'admin/')
+
+# Cart limits
+CART_MAX_ITEM_QUANTITY = 99
+CART_MAX_LINES = 50

@@ -23,7 +23,9 @@ urlpatterns = [
     path(settings.DJANGO_ADMIN_PATH,admin.site.urls),
     path('api/v1/account/',include('account.urls')),
     path('api/v1/product/', include('product.urls')),
-    path('api/v1/admin-auth/',include('adminpanel.urls'))
+    path('api/v1/admin-auth/',include('adminpanel.urls')),
+    path('api/v1/cart/',include('cart.urls')),
+
 ]
 
 if settings.DEBUG:
