@@ -1,8 +1,8 @@
-import { X, Trash2, ShoppingBag, ArrowRight } from "lucide-react";
+import { X, Trash2, ShoppingBag, ArrowRight, AlertTriangle, Loader2 } from "lucide-react";
 import { Link } from "react-router-dom";
 import useCart from "../../context/CartContext";
 import QuantitySelector from "../common/QuantitySelector";
-import { resolveImageUrl, formatPrice } from "../../services/productService";
+import { resolveImageUrl } from "../../services/productService";
 
 /**
  * Slide-out Shopping Basket Drawer
@@ -17,6 +17,10 @@ export default function CartDrawer() {
     clearCart,
     subtotal,
     totalCount,
+    canCheckout,
+    unavailableCount,
+    loading,
+    mutatingItemId,
     toastMessage,
   } = useCart();
 
@@ -63,7 +67,12 @@ export default function CartDrawer() {
         </div>
 
         <div className="gv-cart-drawer-body">
-          {cartItems.length === 0 ? (
+          {loading && cartItems.length === 0 ? (
+            <div className="gv-cart-loading-state">
+              <Loader2 size={32} className="gv-spin" />
+              <p>Loading your fresh basket...</p>
+            </div>
+          ) : cartItems.length === 0 ? (
             <div className="gv-cart-empty">
               <div className="gv-cart-empty-icon">
                 <ShoppingBag size={48} strokeWidth={1.5} />
@@ -79,80 +88,107 @@ export default function CartDrawer() {
               </Link>
             </div>
           ) : (
-            <ul className="gv-cart-items-list">
-              {cartItems.map((item) => {
-                const prod = item.product;
-                const itemKey = item.id || prod.id;
-                const unitPrice = item.variant?.price
-                  ? parseFloat(item.variant.price)
-                  : parseFloat(prod.price) || 0;
-                const itemSubtotal = (unitPrice * item.quantity).toFixed(2);
-                const itemImg = resolveImageUrl(prod.product_img);
-                const maxStock =
-                  typeof item.variant?.stock_quantity === "number"
-                    ? item.variant.stock_quantity
-                    : prod.stock_quantity || 99;
-                const packageLabel = item.variant
-                  ? `${parseFloat(item.variant.quantity) || item.variant.quantity} ${item.variant.unit}`
-                  : null;
+            <>
+              {unavailableCount > 0 && (
+                <div className="gv-cart-unavailable-banner">
+                  <AlertTriangle size={16} />
+                  <span>
+                    {unavailableCount} item{unavailableCount > 1 ? "s" : ""} in your basket requires attention before checkout.
+                  </span>
+                </div>
+              )}
 
-                return (
-                  <li key={itemKey} className="gv-cart-item">
-                    <img
-                      src={itemImg}
-                      alt={prod.name}
-                      className="gv-cart-item-img"
-                    />
+              <ul className="gv-cart-items-list">
+                {cartItems.map((item) => {
+                  const prod = item.product || {};
+                  const variant = item.variant;
+                  const itemKey = item.id;
+                  const isMutating = mutatingItemId === item.id;
 
-                    <div className="gv-cart-item-info">
-                      <div className="gv-cart-item-header">
-                        <Link
-                          to={`/products/${prod.id}`}
-                          className="gv-cart-item-name"
-                          onClick={() => setIsCartOpen(false)}
-                        >
-                          {prod.name}
-                        </Link>
-                        <button
-                          type="button"
-                          className="gv-cart-item-remove"
-                          onClick={() => removeFromCart(itemKey)}
-                          aria-label={`Remove ${prod.name} from basket`}
-                          title="Remove item"
-                        >
-                          <Trash2 size={16} />
-                        </button>
-                      </div>
+                  const unitPriceNum = parseFloat(item.unit_price) || 0;
+                  const lineTotalNum = parseFloat(item.line_total) || 0;
+                  const itemImg = resolveImageUrl(prod.image || prod.product_img);
+                  const maxStock = item.available_stock !== undefined ? item.available_stock : 99;
 
-                      {packageLabel && (
-                        <div className="gv-cart-item-variant-tag">
-                          <span>Pack: <strong>{packageLabel}</strong></span>
-                          {item.variant.sku && (
-                            <span className="gv-cart-item-sku">SKU: {item.variant.sku}</span>
-                          )}
+                  const packageLabel = variant
+                    ? `${parseFloat(variant.quantity) || variant.quantity} ${variant.unit || ""}`.trim()
+                    : null;
+
+                  return (
+                    <li
+                      key={itemKey}
+                      className={`gv-cart-item ${!item.is_available ? "is-unavailable" : ""}`}
+                    >
+                      <img
+                        src={itemImg}
+                        alt={prod.name}
+                        className="gv-cart-item-img"
+                        onError={(e) => {
+                          e.target.onerror = null;
+                          e.target.src =
+                            "https://images.unsplash.com/photo-1610832958506-aa56368176cf?auto=format&fit=crop&w=600&q=80";
+                        }}
+                      />
+
+                      <div className="gv-cart-item-info">
+                        <div className="gv-cart-item-header">
+                          <Link
+                            to={`/products/${prod.id}`}
+                            className="gv-cart-item-name"
+                            onClick={() => setIsCartOpen(false)}
+                          >
+                            {prod.name}
+                          </Link>
+                          <button
+                            type="button"
+                            className="gv-cart-item-remove"
+                            onClick={() => removeFromCart(itemKey)}
+                            disabled={isMutating}
+                            aria-label={`Remove ${prod.name} from basket`}
+                            title="Remove item"
+                          >
+                            {isMutating ? <Loader2 size={14} className="gv-spin" /> : <Trash2 size={16} />}
+                          </button>
                         </div>
-                      )}
 
-                      <div className="gv-cart-item-unit-price">
-                        {item.variant
-                          ? formatPrice(item.variant.price, packageLabel)
-                          : formatPrice(prod.price, prod.unit)}
-                      </div>
+                        {packageLabel && (
+                          <div className="gv-cart-item-variant-tag">
+                            <span>Pack: <strong>{packageLabel}</strong></span>
+                            {variant.sku && (
+                              <span className="gv-cart-item-sku">SKU: {variant.sku}</span>
+                            )}
+                          </div>
+                        )}
 
-                      <div className="gv-cart-item-actions">
-                        <QuantitySelector
-                          quantity={item.quantity}
-                          max={maxStock}
-                          min={1}
-                          onChange={(newQty) => updateQuantity(itemKey, newQty)}
-                        />
-                        <span className="gv-cart-item-total">₹{itemSubtotal}</span>
+                        <div className="gv-cart-item-unit-price">
+                          ₹{unitPriceNum.toFixed(2)} / {packageLabel || prod.unit || "unit"}
+                        </div>
+
+                        {!item.is_available && item.issue_message && (
+                          <div className="gv-item-issue-badge">
+                            <AlertTriangle size={12} />
+                            <span>{item.issue_message}</span>
+                          </div>
+                        )}
+
+                        <div className="gv-cart-item-actions">
+                          <QuantitySelector
+                            quantity={item.quantity}
+                            max={Math.max(1, maxStock)}
+                            min={1}
+                            disabled={isMutating}
+                            onChange={(newQty) => updateQuantity(itemKey, newQty)}
+                          />
+                          <span className="gv-cart-item-total">
+                            ₹{lineTotalNum.toFixed(2)}
+                          </span>
+                        </div>
                       </div>
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
+                    </li>
+                  );
+                })}
+              </ul>
+            </>
           )}
         </div>
 
@@ -168,14 +204,24 @@ export default function CartDrawer() {
             </div>
 
             <div className="gv-cart-cta-wrap">
+              <Link
+                to="/cart"
+                className="gv-btn gv-btn--secondary gv-view-full-cart-btn"
+                onClick={() => setIsCartOpen(false)}
+              >
+                View Full Cart & Summary
+              </Link>
+
               <button
                 type="button"
                 className="gv-checkout-btn"
+                disabled={!canCheckout}
+                title={!canCheckout ? "Please remove or resolve unavailable items first" : "Proceed to Checkout"}
                 onClick={() => {
                   alert(
-                    `Thank you for shopping with Green Village!\nOrder subtotal: ₹${subtotal.toFixed(
+                    `Green Village Checkout Demonstration\n\nSubtotal: ₹${subtotal.toFixed(
                       2
-                    )}\n(Payment gateway & checkout operational demonstration)`
+                    )}\nItems: ${totalCount}\n\n(Checkout & Payment gateway operational demonstration)`
                   );
                 }}
               >
@@ -186,7 +232,11 @@ export default function CartDrawer() {
               <button
                 type="button"
                 className="gv-cart-clear-link"
-                onClick={clearCart}
+                onClick={() => {
+                  if (window.confirm("Are you sure you want to clear your fresh harvest basket?")) {
+                    clearCart();
+                  }
+                }}
               >
                 Clear all items
               </button>

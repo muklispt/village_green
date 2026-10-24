@@ -1,6 +1,6 @@
 import React, { useState, useRef, useMemo, useEffect } from "react";
 import { Link } from "react-router-dom";
-import { ShoppingBag, Check, AlertCircle } from "lucide-react";
+import { ShoppingBag, Check, AlertCircle, Loader2 } from "lucide-react";
 import useCart from "../../context/CartContext";
 import { resolveImageUrl, formatPrice } from "../../services/productService";
 
@@ -12,6 +12,7 @@ import { resolveImageUrl, formatPrice } from "../../services/productService";
 export default function ProductCard({ product }) {
   const { addToCart } = useCart();
   const [isHovered, setIsHovered] = useState(false);
+  const [isAdding, setIsAdding] = useState(false);
   const [zoomOrigin, setZoomOrigin] = useState({ x: 50, y: 50 });
   const [activeImageIndex, setActiveImageIndex] = useState(0);
   const cardMediaRef = useRef(null);
@@ -76,11 +77,29 @@ export default function ProductCard({ product }) {
     setZoomOrigin({ x: 50, y: 50 });
   };
 
-  const handleAddToCart = (e) => {
+  const handleAddToCart = async (e) => {
     e.preventDefault();
     e.stopPropagation();
-    if (!inStock) return;
-    addToCart(product, 1);
+    if (!inStock || isAdding) return;
+
+    let targetVariant = null;
+    if (
+      product.has_variants &&
+      Array.isArray(product.variants) &&
+      product.variants.length > 0
+    ) {
+      targetVariant =
+        product.variants.find(
+          (v) => (v.stock_quantity || 0) > 0 && v.is_active !== false
+        ) || product.variants[0];
+    }
+
+    try {
+      setIsAdding(true);
+      await addToCart(product, 1, targetVariant);
+    } finally {
+      setIsAdding(false);
+    }
   };
 
   return (
@@ -206,12 +225,16 @@ export default function ProductCard({ product }) {
             type="button"
             className="gv-add-cart-btn"
             onClick={handleAddToCart}
-            disabled={!inStock}
+            disabled={!inStock || isAdding}
             aria-label={`Add ${product.name} to basket`}
             title={inStock ? "Add to cart" : "Currently out of stock"}
           >
-            <ShoppingBag size={16} aria-hidden="true" />
-            <span>Add</span>
+            {isAdding ? (
+              <Loader2 size={16} className="gv-spin" aria-hidden="true" />
+            ) : (
+              <ShoppingBag size={16} aria-hidden="true" />
+            )}
+            <span>{isAdding ? "Adding…" : "Add"}</span>
           </button>
         </div>
       </div>

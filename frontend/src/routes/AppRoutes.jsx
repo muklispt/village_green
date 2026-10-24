@@ -3,6 +3,7 @@ import Home from "../pages/Home/Home";
 import CategoryPage from "../pages/Category/CategoryPage";
 import ProductListingPage from "../pages/Product/ProductListingPage";
 import ProductDetailsPage from "../pages/Product/ProductDetailsPage";
+import CartPage from "../pages/Cart/CartPage";
 import Register from "../pages/Auth/Register";
 import Login from "../pages/Auth/Login";
 import VerifyOTP from "../pages/Auth/VerifyOTP";
@@ -28,6 +29,7 @@ export default function AppRoutes() {
       <Route path="/products" element={<ProductListingPage />} />
       <Route path="/marketplace" element={<Navigate to="/products" replace />} />
       <Route path="/products/:id" element={<ProductDetailsPage />} />
+      <Route path="/cart" element={<CartPage />} />
 
       {/* Auth & Patron Account Routes */}
       <Route path="/register" element={<Register />} />

@@ -1,23 +1,25 @@
 import uuid
 from django.db import transaction
-from django.db.models import Prefetch, Exists, OuterRef
-from rest_framework import status
+from rest_framework import serializers
+from django.db.models import Prefetch, Exists, OuterRef,Avg,Count,Q
+from django.shortcuts import get_object_or_404
+from rest_framework import status,generics
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.filters import SearchFilter, OrderingFilter
 from rest_framework.response import Response
 from rest_framework.viewsets import ModelViewSet
 from adminpanel.permissions import has_admin_scope
-
+from rest_framework.permissions import AllowAny,IsAuthenticated,SAFE_METHODS
 from .models import (ProductCategory, Product, ProductVariant,
-                     ProductImage, ProductVideo)
+                     ProductImage, ProductVideo,ProductReview)
 from .pagination import ProductPagination
 from .authentication import SafeStorefrontJWTAuthentication
 from .permissions import IsAdminOrReadOnly
 from .serializers import (ProductCategorySerializer, ProductSerializer,
                            ProductVariantSerializer, ProductImageSerializer,
                            ProductVideoSerializer, ProductListSerializer,
-                           ProductDetailSerializer)
+                           ProductDetailSerializer,ProductReviewSerializer,ProductReviewCreateSerializer)
 from .validators import validate_product_image_file,MAX_IMAGE_PER_PRODUCT
 
 
@@ -68,8 +70,12 @@ class ProductViewSet(ModelViewSet):
         has_variants_subquery = Exists(
             ProductVariant.objects.filter(product=OuterRef('pk'), is_active=True)
         )
+        approved_reviews = Q(reviews__is_approved=True)
         queryset = Product.objects.select_related('product_category', 'promotion_video').annotate(
-            has_active_variants=has_variants_subquery
+            has_active_variants=has_variants_subquery,
+            approved_review_count=Count('reviews',filter=approved_reviews),
+            average_rating=Avg('reviews__rating',filter=approved_reviews),
+            
         )
 
         if not is_staff:
@@ -365,4 +371,89 @@ class ProductVideoViewSet(ModelViewSet):
         with transaction.atomic():
             instance.delete()
             transaction.on_commit(remove_file)
+
+# ---------------------------------------------------------------------------
+# Product reviews
+#
+# Three deliberately separate access paths:
+#   * public    -> approved reviews of active products only (read-only)
+#   * customer  -> own reviews, including pending ones (ownership via queryset)
+#   * staff     -> Django admin moderation (see product/admin.py)
+# ---------------------------------------------------------------------------
+
+
+class ProductReviewListCreateView(generics.ListCreateAPIView):
+    """
+    GET  /api/v1/product/products/<product_id>/reviews/
+        Public. Approved reviews of an active product, newest first, paginated.
+    POST /api/v1/product/products/<product_id>/reviews/
+        Authenticated customer. Creates a review in pending state.
+    """
+    authentication_classes = [SafeStorefrontJWTAuthentication]
+    permission_classes = [AllowAny]   # GET is public; POST is tightened below
+    pagination_class = ProductPagination
+
+    def get_permissions(self):
+        if self.request.method in SAFE_METHODS:
+            return [AllowAny()]
+        return [IsAuthenticated()]
+
+    def get_product(self):
+        """Active product or 404. Also rejects malformed UUIDs via URL routing."""
+        if not hasattr(self, '_product'):
+            self._product = get_object_or_404(
+                Product.objects.filter(is_active=True),
+                pk=self.kwargs['product_id'],
+            )
+        return self._product
+
+    def get_serializer_class(self):
+        if self.request.method in SAFE_METHODS:
+            return ProductReviewSerializer
+        return ProductReviewCreateSerializer
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context['product'] = self.get_product()
+        return context
+
+    def get_queryset(self):
+        # Unapproved reviews are never exposed, and never leak their text.
+        return (
+            ProductReview.objects
+            .filter(product=self.get_product(), is_approved=True)
+            .select_related('user', 'product')
+        )
+
+
+class MyReviewQuerysetMixin:
+    """
+    Ownership is enforced by the queryset itself: another customer's review is
+    simply not found (404), so pending/private reviews are not disclosed.
+    """
+    authentication_classes = [SafeStorefrontJWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return (
+            ProductReview.objects
+            .filter(user=self.request.user)
+            .select_related('product')
+        )
+
+
+class MyReviewListView(MyReviewQuerysetMixin, generics.ListAPIView):
+    """GET /api/v1/product/my-reviews/ - own reviews, pending included."""
+    serializer_class = ProductReviewSerializer
+    pagination_class = ProductPagination
+
+
+class MyReviewDetailView(MyReviewQuerysetMixin, generics.RetrieveUpdateDestroyAPIView):
+    """
+    GET/PATCH/DELETE /api/v1/product/my-reviews/<review_id>/
+
+    Only `rating` and `review_text` can change (serializer read-only fields),
+    and every update resets `is_approved` to False for re-moderation.
+    """
+    serializer_class = ProductReviewSerializer
 

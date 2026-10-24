@@ -13,6 +13,7 @@ import {
   Award,
   Play,
   Film,
+  Loader2,
 } from "lucide-react";
 import Navbar from "../../components/layout/Navbar";
 import Footer from "../../components/layout/Footer";
@@ -39,6 +40,7 @@ export default function ProductDetailsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [copiedLink, setCopiedLink] = useState(false);
+  const [isAddingToCart, setIsAddingToCart] = useState(false);
 
   // Active media selection: selected image & media mode ('image' | 'video')
   const [selectedImage, setSelectedImage] = useState(null);
@@ -209,15 +211,27 @@ export default function ProductDetailsPage() {
 
   const subtotal = (displayPrice * quantity).toFixed(2);
 
-  const handleAddToCart = () => {
-    if (!inStock) return;
-    addToCart(product, quantity, selectedVariant);
+  const handleAddToCart = async () => {
+    if (!inStock || isAddingToCart) return;
+    setIsAddingToCart(true);
+    try {
+      await addToCart(product, quantity, selectedVariant);
+    } finally {
+      setIsAddingToCart(false);
+    }
   };
 
-  const handleBuyNow = () => {
-    if (!inStock) return;
-    addToCart(product, quantity, selectedVariant);
-    setIsCartOpen(true);
+  const handleBuyNow = async () => {
+    if (!inStock || isAddingToCart) return;
+    setIsAddingToCart(true);
+    try {
+      const res = await addToCart(product, quantity, selectedVariant);
+      if (res?.success) {
+        setIsCartOpen(true);
+      }
+    } finally {
+      setIsAddingToCart(false);
+    }
   };
 
   const handleShare = () => {
@@ -473,21 +487,29 @@ export default function ProductDetailsPage() {
                   type="button"
                   className="gv-btn-details-cart"
                   onClick={handleAddToCart}
-                  disabled={!inStock}
+                  disabled={!inStock || isAddingToCart}
                   aria-label="Add to shopping basket"
                 >
-                  <ShoppingBag size={18} />
-                  <span>Add to Basket</span>
+                  {isAddingToCart ? (
+                    <Loader2 size={18} className="gv-spin" />
+                  ) : (
+                    <ShoppingBag size={18} />
+                  )}
+                  <span>{isAddingToCart ? "Adding…" : "Add to Basket"}</span>
                 </button>
 
                 <button
                   type="button"
                   className="gv-btn-details-buy"
                   onClick={handleBuyNow}
-                  disabled={!inStock}
+                  disabled={!inStock || isAddingToCart}
                   aria-label="Buy now and proceed to checkout"
                 >
-                  <span>Buy Now</span>
+                  {isAddingToCart ? (
+                    <Loader2 size={18} className="gv-spin" />
+                  ) : (
+                    <span>Buy Now</span>
+                  )}
                 </button>
 
                 <button

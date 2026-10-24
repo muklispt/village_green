@@ -1648,4 +1648,160 @@ describe("Admin Product Variant Display & Management Contracts", () => {
   });
 });
 
+describe("Cart Service & Cart Page Integration Contracts", () => {
+  test("addItemToCart formats payload without variant when variant is omitted", () => {
+    const buildPayload = ({ productId, variantId = null, quantity = 1 }) => {
+      const payload = {
+        product: productId,
+        quantity: Math.max(1, parseInt(quantity, 10) || 1),
+      };
+      if (variantId) {
+        payload.variant = variantId;
+      }
+      return payload;
+    };
+
+    const payload = buildPayload({
+      productId: "11111111-2222-3333-4444-555555555555",
+      quantity: 2,
+    });
+
+    assert.deepEqual(payload, {
+      product: "11111111-2222-3333-4444-555555555555",
+      quantity: 2,
+    });
+    assert.equal(payload.variant, undefined);
+  });
+
+  test("addItemToCart includes variant UUID when variantId is provided", () => {
+    const buildPayload = ({ productId, variantId = null, quantity = 1 }) => {
+      const payload = {
+        product: productId,
+        quantity: Math.max(1, parseInt(quantity, 10) || 1),
+      };
+      if (variantId) {
+        payload.variant = variantId;
+      }
+      return payload;
+    };
+
+    const payload = buildPayload({
+      productId: "11111111-2222-3333-4444-555555555555",
+      variantId: "66666666-7777-8888-9999-000000000000",
+      quantity: 3,
+    });
+
+    assert.deepEqual(payload, {
+      product: "11111111-2222-3333-4444-555555555555",
+      variant: "66666666-7777-8888-9999-000000000000",
+      quantity: 3,
+    });
+  });
+
+  test("updateCartItemQuantity clamps quantity to minimum 1 and formats PATCH payload", () => {
+    const buildUpdatePayload = (quantity) => ({
+      quantity: Math.max(1, parseInt(quantity, 10) || 1),
+    });
+
+    assert.deepEqual(buildUpdatePayload(5), { quantity: 5 });
+    assert.deepEqual(buildUpdatePayload(0), { quantity: 1 });
+    assert.deepEqual(buildUpdatePayload(-2), { quantity: 1 });
+    assert.deepEqual(buildUpdatePayload("invalid"), { quantity: 1 });
+  });
+
+  test("Cart delivery fee and free delivery threshold calculations", () => {
+    const FREE_THRESHOLD = 500;
+    const STANDARD_FEE = 40;
+
+    const calculateDelivery = (subtotal, itemsCount) => {
+      if (itemsCount === 0) return { fee: 0, progress: 0, remaining: FREE_THRESHOLD };
+      const fee = subtotal >= FREE_THRESHOLD ? 0 : STANDARD_FEE;
+      const progress = Math.min(100, Math.round((subtotal / FREE_THRESHOLD) * 100));
+      const remaining = Math.max(0, FREE_THRESHOLD - subtotal);
+      return { fee, progress, remaining };
+    };
+
+    // Empty cart
+    const empty = calculateDelivery(0, 0);
+    assert.equal(empty.fee, 0);
+    assert.equal(empty.progress, 0);
+
+    // Below threshold (₹200)
+    const below = calculateDelivery(200, 2);
+    assert.equal(below.fee, 40);
+    assert.equal(below.progress, 40);
+    assert.equal(below.remaining, 300);
+
+    // At threshold (₹500)
+    const exact = calculateDelivery(500, 3);
+    assert.equal(exact.fee, 0);
+    assert.equal(exact.progress, 100);
+    assert.equal(exact.remaining, 0);
+
+    // Above threshold (₹750)
+    const above = calculateDelivery(750, 4);
+    assert.equal(above.fee, 0);
+    assert.equal(above.progress, 100);
+    assert.equal(above.remaining, 0);
+  });
+
+  test("can_checkout is false when cart has unavailable items or is empty", () => {
+    const evaluateCanCheckout = (items) => {
+      if (!items || items.length === 0) return false;
+      return items.every((item) => item.is_available === true);
+    };
+
+    assert.equal(evaluateCanCheckout([]), false);
+    assert.equal(
+      evaluateCanCheckout([
+        { id: "1", is_available: true },
+        { id: "2", is_available: true },
+      ]),
+      true
+    );
+    assert.equal(
+      evaluateCanCheckout([
+        { id: "1", is_available: true },
+        { id: "2", is_available: false, issue: "out_of_stock" },
+      ]),
+      false
+    );
+  });
+
+  test("Cart error message extractor handles quantity limit and out-of-stock responses", () => {
+    const parseCartError = (errResponse) => {
+      let errMessage = "Could not add item to basket.";
+      if (errResponse?.data) {
+        const respData = errResponse.data;
+        if (Array.isArray(respData.quantity) && respData.quantity[0]) {
+          errMessage = respData.quantity[0];
+        } else if (Array.isArray(respData.variant) && respData.variant[0]) {
+          errMessage = respData.variant[0];
+        } else if (Array.isArray(respData.product) && respData.product[0]) {
+          errMessage = respData.product[0];
+        } else if (Array.isArray(respData.cart) && respData.cart[0]) {
+          errMessage = respData.cart[0];
+        } else if (typeof respData.detail === "string") {
+          errMessage = respData.detail;
+        }
+      }
+      return errMessage;
+    };
+
+    assert.equal(
+      parseCartError({ data: { quantity: ["Only 3 available. You already have 2 in your cart."] } }),
+      "Only 3 available. You already have 2 in your cart."
+    );
+    assert.equal(
+      parseCartError({ data: { variant: ["Please choose a size for this item."] } }),
+      "Please choose a size for this item."
+    );
+    assert.equal(
+      parseCartError({ data: { cart: ["Your cart can hold at most 50 different items."] } }),
+      "Your cart can hold at most 50 different items."
+    );
+  });
+});
+
+
 

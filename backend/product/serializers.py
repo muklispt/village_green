@@ -1,12 +1,14 @@
 from decimal import Decimal
 from rest_framework import serializers
 from .models import (ProductCategory, Product, ProductVariant,
-                     ProductImage, ProductVideo)
+                     ProductImage, ProductVideo,ProductReview)
 from django.utils.text import slugify
 from rest_framework.validators import UniqueTogetherValidator
 from django.core.exceptions import ValidationError as DjangoValidationError,ObjectDoesNotExist
-from django.db import transaction
+from django.db import transaction,IntegrityError
 from .validators import validate_product_image_file, validate_product_video_file,MAX_IMAGES_PER_PRODUCT
+
+
 
 
 class ProductCategorySerializer(serializers.ModelSerializer):
@@ -383,8 +385,26 @@ class ProductVideoSerializer(serializers.ModelSerializer):
                 ret['video'] = None
         return ret
 
+class ProductReviewStatsMixin:
+    """
+    Reads the review aggregates annotated by ProductViewSet.get_queryset().
 
-class ProductListSerializer(serializers.ModelSerializer):
+    The values are computed in the product query (one aggregate, no extra
+    per-product queries). If a serializer is ever used with a product that was
+    not annotated, fall back to the empty representation instead of silently
+    issuing a query per object.
+    """
+
+    def get_average_rating(self,obj):
+        average = getattr(obj,'average_rating',None)
+        if average is None:
+            return None
+        return float(round(average,2))
+
+    def get_approved_review_count(self,obj):
+        return int(getattr(obj,'approved_review_count',0) or 0)
+
+class ProductListSerializer(ProductReviewStatsMixin,serializers.ModelSerializer):
     category_name = serializers.CharField(
         source='product_category.name',
         read_only=True
@@ -394,6 +414,9 @@ class ProductListSerializer(serializers.ModelSerializer):
     has_variants = serializers.SerializerMethodField()
     variants = serializers.SerializerMethodField()
     variants_count = serializers.SerializerMethodField()
+    average_rating = serializers.SerializerMethodField()
+    approved_review_count = serializers.SerializerMethodField()
+    
 
     class Meta:
         model = Product
@@ -413,6 +436,8 @@ class ProductListSerializer(serializers.ModelSerializer):
             'primary_image',
             'variants',
             'variants_count',
+            'average_rating',
+            'approved_review_count',
         )
 
     def get_is_in_stock(self, obj):
@@ -448,7 +473,7 @@ class ProductListSerializer(serializers.ModelSerializer):
         return None
 
 
-class ProductDetailSerializer(serializers.ModelSerializer):
+class ProductDetailSerializer(ProductReviewStatsMixin, serializers.ModelSerializer):
     category_name = serializers.CharField(
         source='product_category.name',
         read_only=True
@@ -470,6 +495,8 @@ class ProductDetailSerializer(serializers.ModelSerializer):
     stock_quantity = serializers.SerializerMethodField()
     is_in_stock = serializers.SerializerMethodField()
     has_variants = serializers.SerializerMethodField()
+    average_rating = serializers.SerializerMethodField()
+    approved_review_count = serializers.SerializerMethodField()
 
     class Meta(ProductSerializer.Meta):
         fields = ProductSerializer.Meta.fields + (
@@ -480,6 +507,8 @@ class ProductDetailSerializer(serializers.ModelSerializer):
             'variants_count',
             'is_in_stock',
             'has_variants',
+            'average_rating',
+            'approved_review_count',
         )
 
     def get_variants_count(self, obj):
@@ -513,3 +542,115 @@ class ProductDetailSerializer(serializers.ModelSerializer):
         except ObjectDoesNotExist:
             return None
         return ProductVideoSerializer(video,context=self.context).data
+
+
+REVIEW_DUPLICATE_MESSAGE = 'You have already reviewed this product.'
+
+class ProductReviewSerializer(serializers.ModelSerializer):
+    """
+    Read/update representation of a single review.
+
+    Only `rating` and `review_text` are writable. Product, author, approval
+    state and timestamps are owned by the backend: the customer's identity
+    always comes from request.user, never from the payload.
+    """
+    display_name = serializers.CharField(source='user.full_name',read_only=True)
+    product_name = serializers.CharField(source='product.name', read_only=True)
+
+    class Meta:
+        model = ProductReview
+        fields = (
+            'id',
+            'product',
+            'product_name',
+            'display_name',
+            'rating',
+            'review_text',
+            'is_approved',
+            'created_at',
+            'updated_at',
+        )
+        read_only_fields = (
+            'id',
+            'product',
+            'product_name',
+            'display_name',
+            'is_approved',
+            'created_at',
+            'updated_at',
+        )
+        extra_kwargs = {
+            # Overrides the PositiveSmallIntegerField's 0..32767 range with the
+            # business range. The CheckConstraint is the database backstop.
+            'rating': {
+                'min_value': ProductReview.RATING_MIN,
+                'max_value': ProductReview.RATING_MAX,
+            },
+            'review_text': {
+                'required': False,
+                'allow_blank': True,
+                'allow_null': False,
+            },
+        }
+
+    def validate_review_text(self, value):
+        value = (value or '').strip()
+        if len(value) > ProductReview.REVIEW_TEXT_MAX_LENGTH:
+            raise serializers.ValidationError(
+                f'Review text must be at most '
+                f'{ProductReview.REVIEW_TEXT_MAX_LENGTH} characters.'
+            )
+        return value
+
+    def update(self, instance, validated_data):
+        # An edited review is content that has not been moderated yet.
+        validated_data['is_approved'] = False
+        return super().update(instance, validated_data)
+
+
+class ProductReviewCreateSerializer(ProductReviewSerializer):
+    """
+    Create representation. The product comes from the URL and the author from
+    request.user; both are read-only in the payload.
+    """
+
+    @staticmethod
+    def _already_reviewed(user, product):
+        """Application-level duplicate check (indexed unique lookup)."""
+        return ProductReview.objects.filter(user=user, product=product).exists()
+
+    def validate(self, attrs):
+        request = self.context.get('request')
+        user = getattr(request, 'user', None)
+        product = self.context.get('product')
+
+        if product is None or user is None or not user.is_authenticated:
+            raise serializers.ValidationError(
+                {'detail': 'Unable to create this review.'}
+            )
+
+        if self._already_reviewed(user, product):
+            raise serializers.ValidationError({'detail': REVIEW_DUPLICATE_MESSAGE})
+
+        attrs['user'] = user
+        attrs['product'] = product
+        return attrs
+
+    def create(self, validated_data):
+        try:
+            with transaction.atomic():
+                return ProductReview.objects.create(**validated_data)
+        except IntegrityError:
+            # Two concurrent submissions can both pass _already_reviewed();
+            # the UniqueConstraint wins and we translate it to a 400.
+            raise serializers.ValidationError(
+                {'detail': REVIEW_DUPLICATE_MESSAGE}
+            )
+        
+
+
+
+    
+     
+
+

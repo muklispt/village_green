@@ -1,7 +1,8 @@
 from django.db import models
 from django.utils.text import slugify
 import uuid
-
+from django.conf import settings
+from django.core.validators import MinValueValidator, MaxValueValidator
 # Create your models here.
 
 class ProductCategory(models.Model):
@@ -237,4 +238,69 @@ def sync_product_stock_on_variant_delete(sender, instance, **kwargs):
             instance.product.sync_stock_from_variants()
         except Exception:
             pass
+
+class ProductReview(models.Model):
+     """
+    A customer review + 1-5 star rating for a product.
+
+    Moderation: every review starts unapproved. Only approved reviews are
+    publicly listed and only approved reviews feed the product rating
+    aggregates, so moderation decisions are reversible at any time.
+    """
+     RATING_MIN = 1
+     RATING_MAX = 5
+     REVIEW_TEXT_MAX_LENGTH = 2000
+
+     id = models.UUIDField(
+         primary_key=True,
+         default=uuid.uuid4,
+         editable=False,
+     )
+     product = models.ForeignKey(
+         Product,
+         on_delete=models.CASCADE,
+         related_name='reviews',
+     )
+     user = models.ForeignKey(
+         settings.AUTH_USER_MODEL,
+         on_delete=models.CASCADE,
+         related_name='product_reviews',
+     )
+     rating = models.PositiveSmallIntegerField(
+         validators=[
+             MinValueValidator(RATING_MIN),
+             MaxValueValidator(RATING_MAX),
+         ]
+     )
+     review_text = models.TextField(
+         max_length=REVIEW_TEXT_MAX_LENGTH,
+         blank=True,
+         default='',
+     )
+     is_approved = models.BooleanField(default=False)
+     created_at = models.DateTimeField(auto_now_add=True)
+     updated_at = models.DateTimeField(auto_now=True)
+
+     class Meta:
+         db_table = 'product_review'
+         ordering = ['-created_at']
+         constraints = [
+             models.UniqueConstraint(
+                 fields=['product','user'],
+                 name='unique_product_review_per_user',
+             ),
+             models.CheckConstraint(
+                 condition=models.Q(rating__gte=1, rating__lte=5),
+                 name='product_review_rating_range',
+             ),
+         ]
+         indexes = [
+             models.Index(
+                 fields=['product','is_approved','-created_at'],
+                 name='product_review_approved_idx',
+             ),
+         ]
+
+     def __str__(self):
+         return f'{self.product.name} - {self.rating}/5'
 
