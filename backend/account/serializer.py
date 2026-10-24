@@ -15,6 +15,9 @@ from django.utils import timezone
 
 from .utils import OTP_COOLDOWN_SECONDS, revoke_all_tokens
 from .otp import verify_otp
+from rest_framework_simplejwt.serializers import TokenRefreshSerializer
+from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 
 class _CleanFieldsMixin:
     def validate_full_name(self, value):
@@ -86,6 +89,7 @@ class RegisterSerializer(_CleanFieldsMixin,serializers.ModelSerializer):
 
     def create(self, validated_data):
         validated_data['role'] = 'Customer'
+        validated_data['is_active'] = False
         return User.objects.create_user(**validated_data)
 
 
@@ -125,24 +129,38 @@ class LoginSerializer(serializers.Serializer):
         password = attrs['password']
 
         user = authenticate(
-                request=self.context.get('request'),
-                email=email,
-                password=password
+            request=self.context.get('request'),
+            email=email,
+            password=password
         ) 
 
         if user is None:
+            try:
+                candidate = User.objects.get(email__iexact=email)
+                if (
+                    candidate.check_password(password)
+                    and not candidate.is_staff
+                    and not candidate.is_superuser
+                    and not candidate.is_active
+                ):
+                    raise serializers.ValidationError({
+                        'error': 'Verify your email before logging in.'
+                    })
+            except User.DoesNotExist:
+                pass
+
             raise serializers.ValidationError({
-                    'error':'Check email and password'
+                'error': 'Check email and password'
             })
 
         if user.is_superuser or user.is_staff:
             raise serializers.ValidationError({
-                'error':'Check email and password'
+                'error': 'Check email and password'
             })
 
         if not user.is_active:
             raise serializers.ValidationError({
-                    'error':'Verify your email'
+                'error': 'Verify your email before logging in.'
             })
 
         attrs['user'] = user
@@ -467,3 +485,24 @@ class AdminCustomerSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class CustomerTokenRefreshSerializer(TokenRefreshSerializer):
+    """
+    Refresh serializer for customer accounts.
+    Rejects admin-scoped tokens and inactive accounts safely.
+    """
+    def validate(self, attrs):
+        try:
+            token = RefreshToken(attrs.get('refresh', ''))
+            if token.payload.get('scope') == 'admin':
+                raise InvalidToken('Admin tokens cannot be refreshed via customer endpoints.')
+            user_id = token.payload.get('user_id')
+            if user_id:
+                try:
+                    user = User.objects.get(pk=user_id)
+                    if not user.is_active:
+                        raise InvalidToken('User account is inactive.')
+                except User.DoesNotExist:
+                    raise InvalidToken('User does not exist.')
+        except TokenError:
+            pass
+        return super().validate(attrs)

@@ -3,12 +3,14 @@ from .views import (RegisterView,VerifyOTPView,LoginView,UserView,
                     ForgetPasswordView,ResetPasswordView,GoogleLoginView,
                     ResendOTPView,ProfileView,ChangePasswordView,LogoutView,LogoutAllView,
                     DeactivateAccountView,AdminCustomerListView,AdminCustomerDetailView,
-                    AdminCustomerBlockView,AdminCustomerUnblockView)
+                    AdminCustomerBlockView,AdminCustomerUnblockView,CustomerTokenRefreshView)
 
 urlpatterns=[
     path('register/',RegisterView.as_view(),name='register'),
     path('otp_veryfication/',VerifyOTPView.as_view(),name='otp_veryfication'),
     path('login/',LoginView.as_view(),name='login'),
+    path('token/refresh/',CustomerTokenRefreshView.as_view(),name='token-refresh'),
+    path('refresh/',CustomerTokenRefreshView.as_view(),name='auth-refresh'),
     path('logout/',LogoutView.as_view(),name='auth-logout'),
     path('logout-all/',LogoutAllView.as_view(),name='auth-logout-all'),
     path('change-password/',ChangePasswordView.as_view(),name='auth-change-password'),

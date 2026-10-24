@@ -88,6 +88,17 @@ class LoginView(APIView):
         },status=status.HTTP_200_OK)
 
 
+from rest_framework_simplejwt.views import TokenRefreshView
+
+
+class CustomerTokenRefreshView(TokenRefreshView):
+    """
+    Refresh customer JWT access and rotated refresh tokens.
+    Rejects admin-scoped tokens and inactive accounts.
+    """
+    serializer_class = serializer.CustomerTokenRefreshSerializer
+
+
 class UserView(generics.RetrieveAPIView):
     permission_classes =[IsAuthenticated]
     serializer_class =serializer.UserSerializer

@@ -32,6 +32,9 @@ class AccountStatusCodeTestCase(APITestCase):
         }
         response = self.client.post('/api/v1/account/register/', data)
         self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        registered_user = User.objects.get(email='newuser@example.com')
+        self.assertFalse(registered_user.is_active)
+
 
     def test_login_returns_200(self):
         data = {
@@ -650,6 +653,243 @@ class AdminCustomerManagementTestCase(APITestCase):
         self.assertTrue(self.customer.is_active)
 
 
+class EmailVerificationEnforcementTestCase(APITestCase):
+    """
+    Test F1: Email verification enforcement before customer login.
+    Ensures newly registered customers start inactive and only verified
+    accounts can log in.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.password = 'StrongSecret123!'
+        self.verified_user = User.objects.create_user(
+            email='verified_cust@example.com',
+            password=self.password,
+            full_name='Verified Cust',
+            is_active=True
+        )
+        self.unverified_user = User.objects.create_user(
+            email='unverified_cust@example.com',
+            password=self.password,
+            full_name='Unverified Cust',
+            is_active=False
+        )
+
+    def tearDown(self):
+        cache.clear()
+
+    def test_registration_creates_inactive_customer(self):
+        data = {
+            'full_name': 'Pending Cust',
+            'email': 'pending_cust@example.com',
+            'password': 'PendingPass123!',
+            'confirm_password': 'PendingPass123!'
+        }
+        res = self.client.post('/api/v1/account/register/', data)
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+
+        user = User.objects.get(email='pending_cust@example.com')
+        self.assertFalse(user.is_active)
+        self.assertEqual(user.role, 'Customer')
+
+    def test_unverified_customer_cannot_login(self):
+        res = self.client.post('/api/v1/account/login/', {
+            'email': self.unverified_user.email,
+            'password': self.password
+        })
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        error_val = str(res.data)
+        self.assertIn('Verify your email before logging in', error_val)
+
+    def test_unverified_customer_wrong_password_does_not_leak_verification_state(self):
+        res = self.client.post('/api/v1/account/login/', {
+            'email': self.unverified_user.email,
+            'password': 'WrongPassword999!'
+        })
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        error_val = str(res.data)
+        self.assertIn('Check email and password', error_val)
+        self.assertNotIn('Verify your email', error_val)
+
+    def test_verified_customer_logs_in_normally(self):
+        res = self.client.post('/api/v1/account/login/', {
+            'email': self.verified_user.email,
+            'password': self.password
+        })
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertIn('access', res.data)
+        self.assertIn('refresh', res.data)
+
+    def test_otp_verification_activates_account_then_login_succeeds(self):
+        _, plain_otp = create_otp(self.unverified_user)
+
+        # Before OTP verification, login fails
+        pre_login = self.client.post('/api/v1/account/login/', {
+            'email': self.unverified_user.email,
+            'password': self.password
+        })
+        self.assertEqual(pre_login.status_code, status.HTTP_400_BAD_REQUEST)
+
+        # Verify OTP
+        verify_res = self.client.post('/api/v1/account/otp_veryfication/', {
+            'email': self.unverified_user.email,
+            'otp': plain_otp
+        })
+        self.assertEqual(verify_res.status_code, status.HTTP_200_OK)
+
+        self.unverified_user.refresh_from_db()
+        self.assertTrue(self.unverified_user.is_active)
+
+        # Now login succeeds
+        post_login = self.client.post('/api/v1/account/login/', {
+            'email': self.unverified_user.email,
+            'password': self.password
+        })
+        self.assertEqual(post_login.status_code, status.HTTP_200_OK)
+        self.assertIn('access', post_login.data)
+        self.assertIn('refresh', post_login.data)
+
+    def test_invalid_otp_does_not_activate_account(self):
+        create_otp(self.unverified_user)
+
+        res = self.client.post('/api/v1/account/otp_veryfication/', {
+            'email': self.unverified_user.email,
+            'otp': '000000'
+        })
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+        self.unverified_user.refresh_from_db()
+        self.assertFalse(self.unverified_user.is_active)
+
+        # Login must still fail
+        login_res = self.client.post('/api/v1/account/login/', {
+            'email': self.unverified_user.email,
+            'password': self.password
+        })
+        self.assertEqual(login_res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_expired_otp_does_not_activate_account(self):
+        otp_rec, plain_otp = create_otp(self.unverified_user)
+        EmailOtp.objects.filter(pk=otp_rec.pk).update(
+            expir_at=timezone.now() - timedelta(minutes=2)
+        )
+
+        res = self.client.post('/api/v1/account/otp_veryfication/', {
+            'email': self.unverified_user.email,
+            'otp': plain_otp
+        })
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+        self.unverified_user.refresh_from_db()
+        self.assertFalse(self.unverified_user.is_active)
 
 
+class CustomerTokenRefreshTestCase(APITestCase):
+    """
+    Test F2: Customer JWT token refresh endpoint.
+    Verifies rotation, blacklisting, invalid/expired tokens, and admin token isolation.
+    """
 
+    def setUp(self):
+        cache.clear()
+        self.customer = User.objects.create_user(
+            email='refreshtest@example.com',
+            password='RefreshPassword123!',
+            full_name='Refresh Customer',
+            is_active=True
+        )
+
+    def tearDown(self):
+        cache.clear()
+
+    def test_valid_customer_token_refresh_and_rotation(self):
+        from rest_framework_simplejwt.tokens import RefreshToken
+        from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken
+
+        initial_refresh = RefreshToken.for_user(self.customer)
+        res = self.client.post('/api/v1/account/token/refresh/', {
+            'refresh': str(initial_refresh)
+        })
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertIn('access', res.data)
+        self.assertIn('refresh', res.data)
+        self.assertNotEqual(res.data['refresh'], str(initial_refresh))
+
+        # Initial refresh token must now be blacklisted
+        self.assertTrue(BlacklistedToken.objects.filter(token__jti=initial_refresh['jti']).exists())
+
+        # Second attempt with rotated (blacklisted) token fails
+        fail_res = self.client.post('/api/v1/account/token/refresh/', {
+            'refresh': str(initial_refresh)
+        })
+        self.assertEqual(fail_res.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_customer_token_refresh_fallback_url(self):
+        from rest_framework_simplejwt.tokens import RefreshToken
+        initial_refresh = RefreshToken.for_user(self.customer)
+
+        res = self.client.post('/api/v1/account/refresh/', {
+            'refresh': str(initial_refresh)
+        })
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertIn('access', res.data)
+        self.assertIn('refresh', res.data)
+
+    def test_invalid_refresh_token_fails(self):
+        res = self.client.post('/api/v1/account/token/refresh/', {
+            'refresh': 'completely.invalid.token'
+        })
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(res.data.get('code'), 'token_not_valid')
+
+    def test_expired_refresh_token_fails(self):
+        from rest_framework_simplejwt.tokens import RefreshToken
+
+        refresh = RefreshToken.for_user(self.customer)
+        # Manually alter exp claim to past
+        refresh.set_exp(lifetime=-timedelta(minutes=10))
+
+        res = self.client.post('/api/v1/account/token/refresh/', {
+            'refresh': str(refresh)
+        })
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(res.data.get('code'), 'token_not_valid')
+
+    def test_missing_refresh_payload_fails(self):
+        res = self.client.post('/api/v1/account/token/refresh/', {})
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('refresh', res.data)
+
+    def test_customer_refresh_rejects_admin_scoped_token(self):
+        from adminpanel.tokens import AdminRefreshToken
+
+        admin_user = User.objects.create_superuser(
+            email='adminuser@example.com',
+            password='AdminPass123!',
+            full_name='Admin User'
+        )
+        admin_refresh = AdminRefreshToken.for_user(admin_user)
+
+        res = self.client.post('/api/v1/account/token/refresh/', {
+            'refresh': str(admin_refresh)
+        })
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+        detail = str(res.data)
+        self.assertIn('Admin tokens cannot be refreshed', detail)
+
+    def test_customer_refresh_rejects_inactive_account(self):
+        from rest_framework_simplejwt.tokens import RefreshToken
+
+        inactive_user = User.objects.create_user(
+            email='inactiveuser@example.com',
+            password='InactivePass123!',
+            full_name='Inactive User',
+            is_active=False
+        )
+        refresh = RefreshToken.for_user(inactive_user)
+
+        res = self.client.post('/api/v1/account/token/refresh/', {
+            'refresh': str(refresh)
+        })
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
