@@ -74,6 +74,7 @@ INSTALLED_APPS = [
     'product',
     'adminpanel',
     'cart',
+    'orders',
 ]
 
 # simple jwt and permmision config 
@@ -101,6 +102,9 @@ REST_FRAMEWORK = {
         'admin-login':'5/minute',
         'admin-refresh':'30/minute',
         'cart':'120/minute',
+        'orders':'60/minute',
+        'checkout':'10/minute',
+        'order':'60/minute',
     },
 }
 
@@ -280,3 +284,13 @@ DJANGO_ADMIN_PATH = os.getenv('DJANGO_ADMIN_PATH', 'admin/')
 # Cart limits
 CART_MAX_ITEM_QUANTITY = 99
 CART_MAX_LINES = 50
+
+# ---- Orders ----
+from decimal import Decimal  # noqa: E402
+
+ORDER_CURRENCY = 'INR'
+# Money rules. All amounts are Decimal. Defaults: free shipping, no extra tax
+# (prices already include tax). Change through the environment, not in code.
+ORDER_SHIPPING_FEE = Decimal(os.getenv('ORDER_SHIPPING_FEE', '0'))
+ORDER_FREE_SHIPPING_THRESHOLD = Decimal(os.getenv('ORDER_FREE_SHIPPING_THRESHOLD', '0'))
+ORDER_TAX_RATE_PERCENT = Decimal(os.getenv('ORDER_TAX_RATE_PERCENT', '0'))
