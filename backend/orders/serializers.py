@@ -43,13 +43,23 @@ class AdminStatusSerializer(serializers.Serializer):
 
 
 class OrderItemSerializer(serializers.ModelSerializer):
+    product_image = serializers.SerializerMethodField()
+
     class Meta:
         model = OrderItem
         fields = (
             'id','product','variant','product_name','variant_sku',
-            'variant_label','unit_price','quantity','line_total',
+            'variant_label','unit_price','quantity','line_total','product_image',
         )
         read_only_fields = fields
+
+    def get_product_image(self, item):
+        if item.product and item.product.product_img:
+            try:
+                return item.product.product_img.url
+            except Exception:
+                return ''
+        return ''
 
 
 class PaymentSerializer(serializers.ModelSerializer):
@@ -57,38 +67,100 @@ class PaymentSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Payment
-        fields = ('method','provider','amount','currency','status','paid_at')
+        fields = ('method','provider','amount','currency','status','paid_at','failure_reason')
         read_only_fields = fields
 
 
 class OrderSerializer(serializers.ModelSerializer):
-    items = OrderItemSerializer(many=True,read_only=True)
+    items = OrderItemSerializer(many=True, read_only=True)
     payment = PaymentSerializer(read_only=True)
     can_cancel = serializers.SerializerMethodField()
+    history = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
         fields = (
-            'id','order_number','status','payment_method','currency',
-            'subtotal','discount_amount','shipping_fee','tax_amount','total_amount',
-            'recipient_name','recipient_phone','shipping_address','shipping_city',
-            'shipping_pincode','items','payment','can_cancel','created_at','updated_at',
+            'id', 'order_number', 'status', 'payment_method', 'currency',
+            'subtotal', 'discount_amount', 'shipping_fee', 'tax_amount', 'total_amount',
+            'recipient_name', 'recipient_phone', 'shipping_address', 'shipping_city',
+            'shipping_pincode', 'items', 'payment', 'can_cancel', 'history', 'created_at', 'updated_at',
         )
         read_only_fields = fields
 
-    def get_can_cancel(self,order):
+    def get_can_cancel(self, order):
         return services.customer_can_cancel(order)
+
+    def _get_customer_safe_note(self, note):
+        if not note:
+            return ''
+        lower = note.lower()
+        if any(k in lower for k in ['internal', 'staff-only', 'private', 'admin-only', 'confidential']):
+            return ''
+        cleaned = re.sub(r'[\w\.-]+@[\w\.-]+\.\w+', '', note).strip()
+        return cleaned
+
+    def get_history(self, order):
+        return [
+            {
+                'from_status': row.from_status,
+                'to_status': row.to_status,
+                'note': self._get_customer_safe_note(row.note),
+                'created_at': row.created_at,
+            }
+            for row in order.history.all().order_by('created_at', 'id')
+        ]
 
 
 class OrderListSerializer(serializers.ModelSerializer):
-    payment_status = serializers.CharField(source='payment.status',read_only=True)
+    payment_status = serializers.CharField(source='payment.status', read_only=True)
     item_count = serializers.IntegerField(read_only=True)
+    product_image = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
         fields = (
-            'id','order_number','status','payment_method','payment_status',
-            'total_amount','currency','item_count','created_at',
+            'id', 'order_number', 'status', 'payment_method', 'payment_status',
+            'total_amount', 'currency', 'item_count', 'product_image', 'created_at',
+        )
+        read_only_fields = fields
+
+    def get_product_image(self, order):
+        for item in order.items.all():
+            if item.product and item.product.product_img:
+                try:
+                    return item.product.product_img.url
+                except Exception:
+                    continue
+        return ''
+
+
+class AdminOrderListSerializer(serializers.ModelSerializer):
+    payment_status = serializers.CharField(source='payment.status', read_only=True)
+    payment_provider = serializers.CharField(source='payment.provider', read_only=True)
+    item_count = serializers.IntegerField(read_only=True)
+    customer_name = serializers.CharField(source='customer.full_name', read_only=True)
+    customer_email = serializers.CharField(source='customer.email', read_only=True)
+
+    class Meta:
+        model = Order
+        fields = (
+            'id', 'order_number', 'status', 'payment_method', 'payment_status',
+            'payment_provider', 'total_amount', 'currency', 'item_count',
+            'recipient_name', 'recipient_phone', 'customer_name', 'customer_email',
+            'created_at', 'updated_at',
+        )
+        read_only_fields = fields
+
+
+class AdminPaymentSerializer(serializers.ModelSerializer):
+    """Admin view of a payment with non-sensitive provider references."""
+
+    class Meta:
+        model = Payment
+        fields = (
+            'method', 'provider', 'amount', 'currency', 'status',
+            'provider_order_id', 'provider_payment_id', 'paid_at',
+            'failure_reason', 'created_at', 'updated_at',
         )
         read_only_fields = fields
 
@@ -96,9 +168,10 @@ class OrderListSerializer(serializers.ModelSerializer):
 class AdminOrderSerializer(OrderSerializer):
     customer = serializers.SerializerMethodField()
     history = serializers.SerializerMethodField()
+    payment = AdminPaymentSerializer(read_only=True)
 
     class Meta(OrderSerializer.Meta):
-        fields = OrderSerializer.Meta.fields + ('customer','stock_deducted','history')
+        fields = tuple(dict.fromkeys(OrderSerializer.Meta.fields + ('customer', 'stock_deducted', 'history')))
         read_only_fields = fields
 
     def get_customer(self,order):

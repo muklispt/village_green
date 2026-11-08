@@ -1,9 +1,8 @@
-import { useState, useEffect, useMemo } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useState, useEffect } from "react";
+import { useParams, Link, useNavigate } from "react-router-dom";
 import {
   ShoppingBag,
   Check,
-  ShieldCheck,
   Truck,
   Leaf,
   RefreshCw,
@@ -32,7 +31,8 @@ import {
 
 export default function ProductDetailsPage() {
   const { id } = useParams();
-  const { addToCart, setIsCartOpen } = useCart();
+  const navigate = useNavigate();
+  const { addToCart } = useCart();
 
   const [product, setProduct] = useState(null);
   const [relatedProducts, setRelatedProducts] = useState([]);
@@ -227,7 +227,7 @@ export default function ProductDetailsPage() {
     try {
       const res = await addToCart(product, quantity, selectedVariant);
       if (res?.success) {
-        setIsCartOpen(true);
+        navigate("/checkout");
       }
     } finally {
       setIsAddingToCart(false);

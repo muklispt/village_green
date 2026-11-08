@@ -398,7 +398,9 @@ api.interceptors.response.use(
     if (!refreshToken) {
       clearStoredAuth();
       if (!bypassRedirect && typeof window !== "undefined" && window.location.pathname !== "/login") {
-        window.location.href = "/login";
+        const target = window.location.pathname + window.location.search;
+        const redirectParam = target && target !== "/" ? `?redirect=${encodeURIComponent(target)}` : "";
+        window.location.href = `/login${redirectParam}`;
       }
       return Promise.reject(error);
     }
@@ -467,7 +469,9 @@ api.interceptors.response.use(
       processQueue(refreshError, null);
       clearStoredAuth();
       if (!bypassRedirect && typeof window !== "undefined" && window.location.pathname !== "/login") {
-        window.location.href = "/login";
+        const target = window.location.pathname + window.location.search;
+        const redirectParam = target && target !== "/" ? `?redirect=${encodeURIComponent(target)}` : "";
+        window.location.href = `/login${redirectParam}`;
       }
       return Promise.reject(refreshError);
     } finally {

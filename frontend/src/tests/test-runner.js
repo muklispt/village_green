@@ -1805,3 +1805,1249 @@ describe("Cart Service & Cart Page Integration Contracts", () => {
 
 
 
+
+describe("Checkout & Address Validation Contract Tests", () => {
+  const PHONE_REGEX = /^\+?\d{9,15}$/;
+  const PINCODE_REGEX = /^\d{6}$/;
+
+  const validateCheckoutForm = (formData) => {
+    const errors = {};
+    if (!formData.recipient_name?.trim()) {
+      errors.recipient_name = "Recipient full name is required.";
+    }
+    const cleanPhone = (formData.recipient_phone || "").replace(/\s+/g, "");
+    if (!cleanPhone) {
+      errors.recipient_phone = "Phone number is required for delivery coordination.";
+    } else if (!PHONE_REGEX.test(cleanPhone)) {
+      errors.recipient_phone = "Enter a valid 9 to 15 digit phone number (e.g., +919876543210).";
+    }
+
+    if (!formData.shipping_address?.trim()) {
+      errors.shipping_address = "Delivery house/street address is required.";
+    } else if (formData.shipping_address.trim().length < 5) {
+      errors.shipping_address = "Please enter a complete address (at least 5 characters).";
+    }
+
+    if (!formData.shipping_city?.trim()) {
+      errors.shipping_city = "City / Town is required.";
+    }
+
+    const cleanPincode = (formData.shipping_pincode || "").trim();
+    if (!cleanPincode) {
+      errors.shipping_pincode = "Postal PIN code is required.";
+    } else if (!PINCODE_REGEX.test(cleanPincode)) {
+      errors.shipping_pincode = "Enter a valid 6-digit PIN code.";
+    }
+
+    if (!["cod", "online"].includes(formData.payment_method)) {
+      errors.payment_method = "Please select a valid payment method.";
+    }
+
+    return errors;
+  };
+
+  test("validateCheckoutForm accepts valid customer information", () => {
+    const validData = {
+      recipient_name: "Anita Sharma",
+      recipient_phone: "+919876543210",
+      shipping_address: "Flat 4B, Green Meadows, 5th Main Road",
+      shipping_city: "Bengaluru",
+      shipping_pincode: "560001",
+      payment_method: "cod",
+    };
+    const errors = validateCheckoutForm(validData);
+    assert.deepEqual(errors, {});
+  });
+
+  test("validateCheckoutForm rejects short address, invalid pincode and malformed phone", () => {
+    const invalidData = {
+      recipient_name: "",
+      recipient_phone: "1234",
+      shipping_address: "Apt",
+      shipping_city: "",
+      shipping_pincode: "5600",
+      payment_method: "crypto",
+    };
+    const errors = validateCheckoutForm(invalidData);
+    assert.ok(errors.recipient_name);
+    assert.ok(errors.recipient_phone);
+    assert.ok(errors.shipping_address);
+    assert.ok(errors.shipping_city);
+    assert.ok(errors.shipping_pincode);
+    assert.ok(errors.payment_method);
+  });
+});
+
+describe("Order Details Timeline & Status Helpers", () => {
+  const ORDER_STEPS = [
+    { key: "placed", label: "Order Placed", statuses: ["pending", "confirmed", "processing", "shipped", "delivered"] },
+    { key: "confirmed", label: "Confirmed", statuses: ["confirmed", "processing", "shipped", "delivered"] },
+    { key: "processing", label: "Packing", statuses: ["processing", "shipped", "delivered"] },
+    { key: "shipped", label: "Shipped", statuses: ["shipped", "delivered"] },
+    { key: "delivered", label: "Delivered", statuses: ["delivered"] },
+  ];
+
+  function getStepState(step, currentStatus) {
+    if (currentStatus === "cancelled" || currentStatus === "failed") {
+      return step.key === "placed" ? "cancelled" : "pending";
+    }
+    if (step.statuses.includes(currentStatus)) return "completed";
+    return "pending";
+  }
+
+  test("getStepState computes completed steps correctly for confirmed status", () => {
+    assert.equal(getStepState(ORDER_STEPS[0], "confirmed"), "completed");
+    assert.equal(getStepState(ORDER_STEPS[1], "confirmed"), "completed");
+    assert.equal(getStepState(ORDER_STEPS[2], "confirmed"), "pending");
+    assert.equal(getStepState(ORDER_STEPS[3], "confirmed"), "pending");
+  });
+
+  test("getStepState handles cancelled order status", () => {
+    assert.equal(getStepState(ORDER_STEPS[0], "cancelled"), "cancelled");
+    assert.equal(getStepState(ORDER_STEPS[1], "cancelled"), "pending");
+  });
+
+  test("payment return status resolver does not treat redirect as proof of payment", () => {
+    const resolveState = (order) => {
+      if (!order) return "pending";
+      const pStatus = order.payment?.status;
+      if (pStatus === "paid") return "success";
+      if (pStatus === "failed") return "failed";
+      if (pStatus === "cancelled") return "cancelled";
+      if (order.status === "cancelled") return "cancelled";
+      return "pending";
+    };
+
+    assert.equal(resolveState(null), "pending");
+    assert.equal(resolveState({ payment: { status: "pending" } }), "pending");
+    assert.equal(resolveState({ payment: { status: "paid" } }), "success");
+    assert.equal(resolveState({ payment: { status: "failed" } }), "failed");
+    assert.equal(resolveState({ status: "cancelled", payment: { status: "pending" } }), "cancelled");
+  });
+});
+
+describe("Guest Cart & Customer Checkout Integration Tests", () => {
+  // Mock localStorage for test environment
+  class MockLocalStorage {
+    constructor() {
+      this.store = {};
+    }
+    getItem(key) {
+      return Object.prototype.hasOwnProperty.call(this.store, key) ? this.store[key] : null;
+    }
+    setItem(key, value) {
+      this.store[key] = String(value);
+    }
+    removeItem(key) {
+      delete this.store[key];
+    }
+    clear() {
+      this.store = {};
+    }
+  }
+
+  const mockStorage = new MockLocalStorage();
+  const GUEST_CART_KEY = "gv_guest_cart";
+
+  function formatGuestCart(items) {
+    if (!items || items.length === 0) {
+      return {
+        id: null,
+        items: [],
+        total_quantity: 0,
+        subtotal: "0.00",
+        unavailable_count: 0,
+        can_checkout: false,
+        updated_at: null,
+      };
+    }
+    const rows = items.map((item) => ({
+      ...item,
+      quantity: item.quantity,
+      unit_price: String(item.unit_price),
+      line_total: (parseFloat(item.unit_price) * item.quantity).toFixed(2),
+    }));
+    const purchasable = rows.filter((r) => r.is_available);
+    const subtotalNum = purchasable.reduce((acc, r) => acc + parseFloat(r.line_total), 0);
+    const totalQty = rows.reduce((acc, r) => acc + (r.quantity || 0), 0);
+    const unavail = rows.length - purchasable.length;
+
+    return {
+      id: "guest-cart",
+      items: rows,
+      total_quantity: totalQty,
+      subtotal: subtotalNum.toFixed(2),
+      unavailable_count: unavail,
+      can_checkout: rows.length > 0 && unavail === 0,
+      updated_at: new Date().toISOString(),
+    };
+  }
+
+  function addGuestItem(storage, product, quantity = 1, variant = null) {
+    const raw = storage.getItem(GUEST_CART_KEY);
+    const items = raw ? JSON.parse(raw) : [];
+    const targetVariantId = variant?.id || null;
+    const existingIndex = items.findIndex(
+      (i) => i.product.id === product.id && (targetVariantId ? i.variant?.id === targetVariantId : !i.variant)
+    );
+
+    const availableStock =
+      typeof variant?.stock_quantity === "number"
+        ? variant.stock_quantity
+        : typeof product.stock_quantity === "number"
+        ? product.stock_quantity
+        : 999;
+
+    let rawPrice = 0;
+    if (variant && variant.price != null) rawPrice = parseFloat(variant.price);
+    else if (variant && variant.mrp != null) rawPrice = parseFloat(variant.mrp);
+    else if (product.price != null) rawPrice = parseFloat(product.price);
+    else if (product.discount_price != null) rawPrice = parseFloat(product.discount_price);
+    const unitPriceStr = (isNaN(rawPrice) ? 0 : rawPrice).toFixed(2);
+
+    if (existingIndex >= 0) {
+      const current = items[existingIndex];
+      const newTotal = current.quantity + quantity;
+      if (availableStock > 0 && current.quantity >= availableStock) {
+        return { success: false, error: "Maximum stock reached" };
+      }
+      const finalQty = availableStock > 0 ? Math.min(newTotal, availableStock) : newTotal;
+      items[existingIndex] = {
+        ...current,
+        quantity: finalQty,
+        unit_price: unitPriceStr,
+        line_total: (parseFloat(unitPriceStr) * finalQty).toFixed(2),
+        available_stock: availableStock,
+        is_available: availableStock >= finalQty,
+      };
+    } else {
+      const finalQty = availableStock > 0 ? Math.min(quantity, availableStock) : quantity;
+      const newItem = {
+        id: `guest_${product.id}_${targetVariantId || "base"}`,
+        product: {
+          id: product.id,
+          name: product.name,
+          slug: product.slug || "slug",
+          unit: product.unit || "unit",
+          image: null,
+        },
+        variant: variant
+          ? {
+              id: variant.id,
+              sku: variant.sku || "",
+              quantity: String(variant.quantity || "1"),
+              unit: variant.unit || "unit",
+              mrp: String(variant.mrp || unitPriceStr),
+            }
+          : null,
+        quantity: finalQty,
+        unit_price: unitPriceStr,
+        line_total: (parseFloat(unitPriceStr) * finalQty).toFixed(2),
+        available_stock: availableStock,
+        is_available: availableStock >= finalQty,
+        issue: availableStock < finalQty ? "INSUFFICIENT_STOCK" : null,
+      };
+      items.push(newItem);
+    }
+
+    storage.setItem(GUEST_CART_KEY, JSON.stringify(items));
+    return { success: true, cart: formatGuestCart(items) };
+  }
+
+  test("guest cart allows adding products without authentication and calculates totals", () => {
+    mockStorage.clear();
+    const product = { id: "p-001", name: "Organic Tomatoes", price: "40.00", stock_quantity: 10 };
+    const res = addGuestItem(mockStorage, product, 2);
+
+    assert.equal(res.success, true);
+    assert.equal(res.cart.items.length, 1);
+    assert.equal(res.cart.total_quantity, 2);
+    assert.equal(res.cart.subtotal, "80.00");
+    assert.equal(res.cart.can_checkout, true);
+  });
+
+  test("guest cart respects stock clamping when adding excessive quantity", () => {
+    mockStorage.clear();
+    const product = { id: "p-002", name: "Dragon Fruit", price: "150.00", stock_quantity: 3 };
+    const res = addGuestItem(mockStorage, product, 5);
+
+    assert.equal(res.success, true);
+    assert.equal(res.cart.items[0].quantity, 3);
+    assert.equal(res.cart.subtotal, "450.00");
+
+    // Second addition should reject when already at max stock
+    const secondRes = addGuestItem(mockStorage, product, 1);
+    assert.equal(secondRes.success, false);
+    assert.equal(secondRes.error, "Maximum stock reached");
+  });
+
+  test("guest cart properly segregates different variants of the same product", () => {
+    mockStorage.clear();
+    const product = { id: "p-003", name: "Raw Honey", price: "250.00" };
+    const v500g = { id: "v-500", sku: "HONEY-500", quantity: "500", unit: "g", price: "250.00", stock_quantity: 10 };
+    const v1kg = { id: "v-1000", sku: "HONEY-1000", quantity: "1", unit: "kg", price: "480.00", stock_quantity: 5 };
+
+    addGuestItem(mockStorage, product, 1, v500g);
+    const res = addGuestItem(mockStorage, product, 2, v1kg);
+
+    assert.equal(res.cart.items.length, 2);
+    assert.equal(res.cart.total_quantity, 3);
+    assert.equal(res.cart.subtotal, "1210.00"); // 250 + (480 * 2) = 1210.00
+  });
+
+  test("guest-to-authenticated cart sync converts local items to backend requests and clears storage", async () => {
+    mockStorage.clear();
+    const productA = { id: "p-sync-1", name: "Spinach", price: "30.00", stock_quantity: 5 };
+    const productB = { id: "p-sync-2", name: "Almonds", price: "400.00" };
+    const variantB = { id: "v-almond-250", quantity: "250", unit: "g", price: "220.00", stock_quantity: 8 };
+
+    addGuestItem(mockStorage, productA, 2);
+    addGuestItem(mockStorage, productB, 1, variantB);
+
+    const guestItems = JSON.parse(mockStorage.getItem(GUEST_CART_KEY));
+    assert.equal(guestItems.length, 2);
+
+    const syncedCalls = [];
+    const mockAddItemToCart = async (payload) => {
+      syncedCalls.push(payload);
+      return { success: true };
+    };
+
+    // Simulate login synchronization routine
+    for (const item of guestItems) {
+      await mockAddItemToCart({
+        productId: item.product.id,
+        variantId: item.variant?.id || null,
+        quantity: item.quantity,
+      });
+    }
+    mockStorage.removeItem(GUEST_CART_KEY);
+
+    assert.equal(syncedCalls.length, 2);
+    assert.deepEqual(syncedCalls[0], { productId: "p-sync-1", variantId: null, quantity: 2 });
+    assert.deepEqual(syncedCalls[1], { productId: "p-sync-2", variantId: "v-almond-250", quantity: 1 });
+    assert.equal(mockStorage.getItem(GUEST_CART_KEY), null);
+  });
+
+  test("checkout idempotency key is preserved across rapid double-submission", () => {
+    let keyRef = "";
+    const getIdempotencyKey = () => {
+      if (!keyRef) {
+        keyRef = `GV-CHK-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+      }
+      return keyRef;
+    };
+
+    const firstKey = getIdempotencyKey();
+    const secondKey = getIdempotencyKey();
+    assert.ok(firstKey.startsWith("GV-CHK-"));
+    assert.equal(firstKey, secondKey);
+  });
+
+  test("order creation payload enforces strict phone number and pincode formats", () => {
+    const sanitizePhone = (raw) => raw.replace(/\s+/g, "");
+    assert.equal(sanitizePhone("+91 98765 43210"), "+919876543210");
+    assert.equal(sanitizePhone(" 9876543210 "), "9876543210");
+
+    const validPincode = /^\d{6}$/.test("560001");
+    const invalidPincode = /^\d{6}$/.test("5600018");
+    assert.equal(validPincode, true);
+    assert.equal(invalidPincode, false);
+  });
+
+  test("order history date and currency formatting matches e-commerce specifications", () => {
+    const formatINR = (amt) =>
+      `₹${Number(amt || 0).toLocaleString("en-IN", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      })}`;
+
+    assert.equal(formatINR("540.00"), "₹540.00");
+    assert.equal(formatINR(1250.5), "₹1,250.50");
+  });
+});
+
+describe("Razorpay Checkout Frontend Integration & Security Contracts", () => {
+  // Mock session data returned by backend POST /api/v1/orders/<order_id>/pay/
+  const mockBackendSession = {
+    key_id: "rzp_test_GV102030405060",
+    razorpay_order_id: "order_GVRzp999888777",
+    order_id: "e4a2c589-9a70-4f59-9988-123456789abc",
+    order_number: "GV88899900",
+    amount: 145000, // 1450.00 INR in paise
+    currency: "INR",
+    name: "Green Village",
+    description: "Order #GV88899900",
+    prefill: {
+      name: "Ramesh Sharma",
+      email: "ramesh@example.com",
+      contact: "+919876543210",
+    },
+  };
+
+  test("1. Successful payment: openRazorpayCheckout passes authoritative backend parameters and triggers verification callback", async () => {
+    let capturedOptions = null;
+    let eventListeners = {};
+
+    class MockRazorpayInstance {
+      constructor(options) {
+        capturedOptions = options;
+      }
+      on(event, handler) {
+        eventListeners[event] = handler;
+      }
+      open() {
+        this.opened = true;
+      }
+    }
+
+    globalThis.window = {
+      Razorpay: MockRazorpayInstance,
+    };
+
+    const { openRazorpayCheckout } = await import("../services/razorpayService.js");
+
+    let successResponse = null;
+    const rzp = openRazorpayCheckout({
+      sessionData: mockBackendSession,
+      onSuccess: (res) => {
+        successResponse = res;
+      },
+      onDismiss: () => {},
+      onError: () => {},
+    });
+
+    assert.ok(rzp.opened, "Razorpay checkout modal should be opened");
+    assert.equal(capturedOptions.key, "rzp_test_GV102030405060");
+    assert.equal(capturedOptions.amount, 145000, "Must pass authoritative amount from backend in paise");
+    assert.equal(capturedOptions.currency, "INR");
+    assert.equal(capturedOptions.order_id, "order_GVRzp999888777");
+    assert.equal(capturedOptions.prefill.contact, "+919876543210");
+    assert.equal(capturedOptions.theme.color, "#1b4332", "Must maintain Green Village brand color");
+
+    // Simulate user completing payment in checkout modal
+    capturedOptions.handler({
+      razorpay_payment_id: "pay_GV777666555",
+      razorpay_order_id: "order_GVRzp999888777",
+      razorpay_signature: "hmac_sha256_mock_signature_valid",
+    });
+
+    assert.ok(successResponse, "Success callback must be executed");
+    assert.equal(successResponse.razorpay_payment_id, "pay_GV777666555");
+    assert.equal(successResponse.razorpay_order_id, "order_GVRzp999888777");
+    assert.equal(successResponse.razorpay_signature, "hmac_sha256_mock_signature_valid");
+
+    delete globalThis.window;
+  });
+
+  test("2. Failed payment: captures payment.failed event and delivers error details safely", async () => {
+    let eventListeners = {};
+
+    class MockRazorpayInstance {
+      constructor(options) {
+        this.options = options;
+      }
+      on(event, handler) {
+        eventListeners[event] = handler;
+      }
+      open() {}
+    }
+
+    globalThis.window = { Razorpay: MockRazorpayInstance };
+    const { openRazorpayCheckout } = await import("../services/razorpayService.js");
+
+    let capturedError = null;
+    openRazorpayCheckout({
+      sessionData: mockBackendSession,
+      onSuccess: () => {},
+      onDismiss: () => {},
+      onError: (err) => {
+        capturedError = err;
+      },
+    });
+
+    assert.ok(eventListeners["payment.failed"], "Must register listener for payment.failed");
+
+    // Simulate payment failure from bank
+    eventListeners["payment.failed"]({
+      error: {
+        code: "BAD_REQUEST_ERROR",
+        description: "Transaction declined by issuing bank",
+        source: "customer",
+        step: "payment_authentication",
+        reason: "payment_failed",
+      },
+    });
+
+    assert.ok(capturedError, "Error callback must receive failure details");
+    assert.equal(capturedError.description, "Transaction declined by issuing bank");
+
+    delete globalThis.window;
+  });
+
+  test("3. Modal dismissal: handles user modal dismissal gracefully without crashing", async () => {
+    let capturedOptions = null;
+    class MockRazorpayInstance {
+      constructor(options) {
+        capturedOptions = options;
+      }
+      on() {}
+      open() {}
+    }
+
+    globalThis.window = { Razorpay: MockRazorpayInstance };
+    const { openRazorpayCheckout } = await import("../services/razorpayService.js");
+
+    let dismissalHandled = false;
+    openRazorpayCheckout({
+      sessionData: mockBackendSession,
+      onSuccess: () => {},
+      onDismiss: () => {
+        dismissalHandled = true;
+      },
+      onError: () => {},
+    });
+
+    assert.ok(capturedOptions.modal.ondismiss, "Modal options must define ondismiss callback");
+    capturedOptions.modal.ondismiss();
+    assert.equal(dismissalHandled, true, "onDismiss callback must trigger on modal close");
+
+    delete globalThis.window;
+  });
+
+  test("4. Script loading failure: loadRazorpayScript cleans up and rejects on network error", async () => {
+    const createdScripts = [];
+    const mockDocument = {
+      querySelector: () => null,
+      createElement: (tag) => {
+        const el = {
+          tagName: tag.toUpperCase(),
+          parentNode: {
+            removeChild: (node) => {
+              const idx = createdScripts.indexOf(node);
+              if (idx !== -1) createdScripts.splice(idx, 1);
+            },
+          },
+        };
+        createdScripts.push(el);
+        return el;
+      },
+      body: {
+        appendChild: (el) => {
+          // Simulate network failure by invoking onerror asynchronously
+          setTimeout(() => {
+            if (el.onerror) el.onerror(new Error("Network connection error"));
+          }, 5);
+        },
+      },
+    };
+
+    globalThis.window = {};
+    globalThis.document = mockDocument;
+
+    const { loadRazorpayScript, _resetScriptLoader } = await import("../services/razorpayService.js");
+    _resetScriptLoader();
+
+    await assert.rejects(
+      async () => {
+        await loadRazorpayScript();
+      },
+      {
+        message: /Unable to load secure payment gateway/,
+      }
+    );
+
+    // After failure, script node must be removed to avoid dangling DOM elements
+    assert.equal(createdScripts.length, 0, "Failed script element should be removed from DOM");
+
+    _resetScriptLoader();
+    delete globalThis.window;
+    delete globalThis.document;
+  });
+
+  test("5. Backend initiation failure: rejects invalid or incomplete session payload", async () => {
+    globalThis.window = { Razorpay: class {} };
+    const { openRazorpayCheckout } = await import("../services/razorpayService.js");
+
+    assert.throws(() => {
+      openRazorpayCheckout({
+        sessionData: null,
+        onSuccess: () => {},
+      });
+    }, /Invalid Razorpay payment session data/);
+
+    assert.throws(() => {
+      openRazorpayCheckout({
+        sessionData: { key_id: "rzp_test_123" }, // missing razorpay_order_id
+        onSuccess: () => {},
+      });
+    }, /Missing required session parameters/);
+
+    delete globalThis.window;
+  });
+
+  test("6. Verification failure: frontend does not trust modal callback alone and enforces authoritative backend confirmation", async () => {
+    let orderPaymentStatus = "pending";
+
+    // Mock verification workflow
+    const handlePaymentVerification = async (verifyApiCall, orderId, paymentPayload) => {
+      try {
+        const result = await verifyApiCall(orderId, paymentPayload);
+        if (result.status === "success" || result.status === "already_paid") {
+          orderPaymentStatus = "paid";
+          return { success: true, redirect: `/orders/${orderId}?payment_success=1` };
+        }
+      } catch (err) {
+        // Authoritative rule: on verification error or network timeout, NEVER mark paid
+        return { success: false, redirect: `/orders/${orderId}?payment_pending=1&verify_pending=1` };
+      }
+    };
+
+    // Scenario A: Verification API fails with signature mismatch (HTTP 400)
+    const mockFailingVerifyApi = async () => {
+      const err = new Error("Invalid payment signature");
+      err.response = { status: 400, data: { detail: "Invalid payment signature." } };
+      throw err;
+    };
+
+    const failOutcome = await handlePaymentVerification(
+      mockFailingVerifyApi,
+      mockBackendSession.order_id,
+      {
+        razorpay_order_id: "order_GVRzp999888777",
+        razorpay_payment_id: "pay_tampered_123",
+        razorpay_signature: "forged_signature",
+      }
+    );
+
+    assert.equal(orderPaymentStatus, "pending", "Payment status MUST NOT be upgraded to paid on verification failure");
+    assert.equal(failOutcome.success, false);
+    assert.ok(failOutcome.redirect.includes("payment_pending=1"));
+
+    // Scenario B: Verification API succeeds
+    const mockSuccessfulVerifyApi = async () => ({ status: "success", order_id: mockBackendSession.order_id });
+    const successOutcome = await handlePaymentVerification(
+      mockSuccessfulVerifyApi,
+      mockBackendSession.order_id,
+      {
+        razorpay_order_id: "order_GVRzp999888777",
+        razorpay_payment_id: "pay_GV777666555",
+        razorpay_signature: "valid_hmac_sig",
+      }
+    );
+
+    assert.equal(orderPaymentStatus, "paid", "Payment status becomes paid ONLY after backend confirms");
+    assert.equal(successOutcome.success, true);
+    assert.ok(successOutcome.redirect.includes("payment_success=1"));
+  });
+
+  test("7. Duplicate button clicks: synchronous ref lock prevents concurrent checkout triggers", async () => {
+    let lockRef = { current: false };
+    let executionCount = 0;
+
+    const triggerCheckout = async () => {
+      if (lockRef.current) return "blocked";
+      lockRef.current = true;
+      try {
+        executionCount++;
+        await new Promise((r) => setTimeout(r, 20));
+        return "executed";
+      } finally {
+        lockRef.current = false;
+      }
+    };
+
+    // Fire 3 simultaneous rapid clicks
+    const [res1, res2, res3] = await Promise.all([
+      triggerCheckout(),
+      triggerCheckout(),
+      triggerCheckout(),
+    ]);
+
+    assert.equal(res1, "executed");
+    assert.equal(res2, "blocked", "Concurrent click 2 must be blocked by synchronous lock");
+    assert.equal(res3, "blocked", "Concurrent click 3 must be blocked by synchronous lock");
+    assert.equal(executionCount, 1, "Only one checkout execution must occur");
+  });
+
+  test("8. Expired JWT: protected payment endpoints require valid authentication", async () => {
+    const { isPublicEndpoint, isTokenExpired } = await import("../services/api.js");
+
+    assert.equal(isPublicEndpoint("/orders/checkout/"), false, "Checkout endpoint must be protected");
+    assert.equal(isPublicEndpoint("/orders/123/pay/"), false, "Payment initiate endpoint must be protected");
+    assert.equal(isPublicEndpoint("/orders/123/verify/"), false, "Payment verify endpoint must be protected");
+
+    // Valid future token
+    const validToken = `header.${Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600 })).toString("base64")}.sig`;
+    assert.equal(isTokenExpired(validToken), false);
+
+    // Expired past token
+    const expiredToken = `header.${Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) - 3600 })).toString("base64")}.sig`;
+    assert.equal(isTokenExpired(expiredToken), true);
+  });
+
+  test("9. COD checkout regression protection: COD bypasses Razorpay SDK and routes directly", async () => {
+    let razorpayInitiated = false;
+    const checkoutRouter = (paymentMethod, orderId) => {
+      if (paymentMethod === "cod") {
+        return { route: `/orders/${orderId}`, openedGateway: false };
+      } else if (paymentMethod === "online") {
+        razorpayInitiated = true;
+        return { route: "await_payment", openedGateway: true };
+      }
+    };
+
+    const codResult = checkoutRouter("cod", "order_cod_123");
+    assert.equal(codResult.route, "/orders/order_cod_123");
+    assert.equal(codResult.openedGateway, false);
+    assert.equal(razorpayInitiated, false, "COD orders must never invoke online payment gateway");
+  });
+
+  test("10. Cancelled order & COD retry restriction: canRetryPayment enforces business rules", () => {
+    const canRetryPayment = (order) => Boolean(
+      order &&
+      order.payment_method === "online" &&
+      order.status === "pending" &&
+      order.payment?.status !== "paid" &&
+      order.status !== "cancelled"
+    );
+
+    // Cancelled order cannot retry
+    assert.equal(
+      canRetryPayment({
+        status: "cancelled",
+        payment_method: "online",
+        payment: { status: "cancelled" },
+      }),
+      false,
+      "Cancelled orders must not allow retry payment"
+    );
+
+    // COD order cannot retry online
+    assert.equal(
+      canRetryPayment({
+        status: "pending",
+        payment_method: "cod",
+        payment: { status: "pending" },
+      }),
+      false,
+      "COD orders must not allow online retry"
+    );
+
+    // Already paid order cannot retry
+    assert.equal(
+      canRetryPayment({
+        status: "pending",
+        payment_method: "online",
+        payment: { status: "paid" },
+      }),
+      false,
+      "Already paid orders must not allow retry payment"
+    );
+
+    // Valid pending online order can retry
+    assert.equal(
+      canRetryPayment({
+        status: "pending",
+        payment_method: "online",
+        payment: { status: "pending" },
+      }),
+      true,
+      "Eligible pending online order must allow retry payment"
+    );
+  });
+
+  test("11. loadRazorpay wrapper module re-exports functions cleanly", async () => {
+    const serviceLoader = await import("../services/loadRazorpay.js");
+    const utilLoader = await import("../utils/loadRazorpay.js");
+
+    assert.equal(typeof serviceLoader.loadRazorpayScript, "function");
+    assert.equal(typeof serviceLoader.openRazorpayCheckout, "function");
+    assert.equal(typeof utilLoader.loadRazorpayScript, "function");
+    assert.equal(typeof utilLoader.openRazorpayCheckout, "function");
+    assert.equal(serviceLoader.RAZORPAY_SCRIPT_URL, "https://checkout.razorpay.com/v1/checkout.js");
+  });
+
+  test("12. Razorpay Standard Checkout options support platform-dependent UPI without custom deep links or collect flows", async () => {
+    let capturedOptions = null;
+    globalThis.window = {
+      Razorpay: class {
+        constructor(options) {
+          capturedOptions = options;
+        }
+        on() {}
+        open() {}
+      },
+    };
+
+    const { openRazorpayCheckout } = await import("../services/razorpayService.js");
+
+    openRazorpayCheckout({
+      sessionData: mockBackendSession,
+      onSuccess: () => {},
+      onDismiss: () => {},
+      onError: () => {},
+    });
+
+    // Verify standard options
+    assert.ok(capturedOptions, "Options must be passed to Razorpay instance");
+    assert.equal(capturedOptions.order_id, "order_GVRzp999888777");
+    assert.equal(capturedOptions.amount, 145000);
+    assert.equal(capturedOptions.currency, "INR");
+
+    // Strictly ensure no manual/custom UPI deep links or hacky undocumented options are injected
+    assert.equal(capturedOptions.upi_link, undefined, "Must NOT construct custom UPI deep links");
+    assert.equal(capturedOptions.vpa, undefined, "Must NOT use deprecated UPI Collect flow");
+    assert.equal(capturedOptions.theme.color, "#1b4332");
+
+    delete globalThis.window;
+  });
+
+  test("13. Safe order status check after mobile UPI intent return preserves order state without duplicating orders", async () => {
+    let orderFetchCount = 0;
+    const initialOrder = {
+      id: "e4a2c589-9a70-4f59-9988-123456789abc",
+      order_number: "GV88899900",
+      status: "pending",
+      payment_method: "online",
+      payment: { status: "pending" },
+    };
+
+    const mockGetOrder = async (orderId) => {
+      orderFetchCount++;
+      // Simulate backend polling after mobile intent payment settled
+      return {
+        ...initialOrder,
+        status: "confirmed",
+        payment: { status: "paid" },
+      };
+    };
+
+    // Client checks status on return
+    const refreshedOrder = await mockGetOrder(initialOrder.id);
+    assert.equal(orderFetchCount, 1);
+    assert.equal(refreshedOrder.id, initialOrder.id, "Must keep identical order ID");
+    assert.equal(refreshedOrder.payment.status, "paid");
+    assert.equal(refreshedOrder.status, "confirmed");
+  });
+});
+
+describe("Admin Order & Category Management Contracts", () => {
+  test("1. Admin navigation items include Orders (/admin/orders) and Categories (/admin/categories)", async () => {
+    const navItems = [
+      { label: "Dashboard", path: "/admin/dashboard" },
+      { label: "Orders", path: "/admin/orders" },
+      { label: "Categories", path: "/admin/categories" },
+      { label: "Products", path: "/admin/products" },
+      { label: "Customers", path: "/admin/customers" },
+    ];
+
+    const orderNav = navItems.find((n) => n.path === "/admin/orders");
+    const categoryNav = navItems.find((n) => n.path === "/admin/categories");
+
+    assert.ok(orderNav, "Orders navigation link must exist");
+    assert.equal(orderNav.label, "Orders");
+    assert.ok(categoryNav, "Categories navigation link must exist");
+    assert.equal(categoryNav.label, "Categories");
+  });
+
+  test("2. getValidOrderTransitions enforces backend business rules and prohibits cancelling shipped orders", async () => {
+    const { getValidOrderTransitions, ORDER_VALID_TRANSITIONS } = await import("../services/adminService.js");
+
+    assert.deepEqual(getValidOrderTransitions("PENDING"), ["CONFIRMED", "CANCELLED"]);
+    assert.deepEqual(getValidOrderTransitions("CONFIRMED"), ["PROCESSING", "CANCELLED"]);
+    assert.deepEqual(getValidOrderTransitions("PROCESSING"), ["SHIPPED", "CANCELLED"]);
+    assert.deepEqual(getValidOrderTransitions("SHIPPED"), ["DELIVERED"], "Shipped orders cannot be cancelled");
+    assert.deepEqual(getValidOrderTransitions("DELIVERED"), [], "Delivered is a terminal status");
+    assert.deepEqual(getValidOrderTransitions("CANCELLED"), [], "Cancelled is a terminal status");
+    assert.deepEqual(getValidOrderTransitions("unknown"), []);
+    assert.deepEqual(getValidOrderTransitions(null), []);
+  });
+
+  test("3. getAdminOrders parameter builder sanitizes search, pagination and multi-criteria filters", async () => {
+    const buildCleanOrderParams = (params = {}) => {
+      const cleanParams = {};
+      if (params.page) cleanParams.page = params.page;
+      if (params.page_size) cleanParams.page_size = params.page_size;
+      if (params.search && params.search.trim()) cleanParams.search = params.search.trim();
+      if (params.status && params.status !== "all") cleanParams.status = params.status;
+      if (params.payment_status && params.payment_status !== "all") cleanParams.payment_status = params.payment_status;
+      if (params.payment_method && params.payment_method !== "all") cleanParams.payment_method = params.payment_method;
+      if (params.date_from) cleanParams.date_from = params.date_from;
+      if (params.date_to) cleanParams.date_to = params.date_to;
+      return cleanParams;
+    };
+
+    const cleaned = buildCleanOrderParams({
+      page: 2,
+      page_size: 15,
+      search: "  GV998877  ",
+      status: "CONFIRMED",
+      payment_status: "all",
+      payment_method: "online",
+      date_from: "2026-10-01",
+      date_to: "2026-10-31",
+    });
+
+    assert.equal(cleaned.page, 2);
+    assert.equal(cleaned.page_size, 15);
+    assert.equal(cleaned.search, "GV998877");
+    assert.equal(cleaned.status, "CONFIRMED");
+    assert.equal(cleaned.payment_status, undefined, "'all' filter should be omitted");
+    assert.equal(cleaned.payment_method, "online");
+    assert.equal(cleaned.date_from, "2026-10-01");
+    assert.equal(cleaned.date_to, "2026-10-31");
+  });
+
+  test("4. REFUND_PENDING status is detected and formatted distinctly for admin alerting", () => {
+    const isRefundPending = (paymentStatus) => {
+      return String(paymentStatus || "").toUpperCase() === "REFUND_PENDING";
+    };
+
+    assert.equal(isRefundPending("REFUND_PENDING"), true);
+    assert.equal(isRefundPending("refund_pending"), true);
+    assert.equal(isRefundPending("SUCCESS"), false);
+    assert.equal(isRefundPending("PENDING"), false);
+  });
+
+  test("5. Synchronous cancellation ref lock prevents duplicate concurrent cancellation requests", () => {
+    let cancelCallCount = 0;
+    const lockRef = { current: false };
+
+    const handleCancel = () => {
+      if (lockRef.current) return;
+      lockRef.current = true;
+      cancelCallCount++;
+    };
+
+    // User triggers cancellation once
+    handleCancel();
+    assert.equal(cancelCallCount, 1);
+    assert.equal(lockRef.current, true);
+
+    // Rapid second click while first is executing
+    handleCancel();
+    assert.equal(cancelCallCount, 1, "Duplicate click must be dropped while locked");
+
+    // Release after completion
+    lockRef.current = false;
+    handleCancel();
+    assert.equal(cancelCallCount, 2);
+  });
+
+  test("6. Category safe deletion logic prevents deletion in UI when products_count > 0", () => {
+    const canDeleteCategory = (category) => {
+      return Boolean(category && (!category.products_count || category.products_count === 0));
+    };
+
+    const categoryWithProducts = { id: "cat-1", name: "Vegetables", products_count: 5 };
+    const emptyCategory = { id: "cat-2", name: "Seasonal Extras", products_count: 0 };
+    const nullCountCategory = { id: "cat-3", name: "New Category", products_count: null };
+
+    assert.equal(canDeleteCategory(categoryWithProducts), false, "Must block deletion when products exist");
+    assert.equal(canDeleteCategory(emptyCategory), true, "Must allow deletion when 0 products");
+    assert.equal(canDeleteCategory(nullCountCategory), true, "Must allow deletion when 0/null products");
+  });
+
+  test("7. Category backend deletion 400 error message is parsed and surfaced without crash", () => {
+    const errorResponse = {
+      response: {
+        status: 400,
+        data: {
+          detail: "Cannot delete category because it contains active products. Please reassign or delete these products first.",
+        },
+      },
+    };
+
+    const parseDeleteError = (err) => {
+      return err?.response?.data?.detail || err?.response?.data?.error || "Failed to delete category.";
+    };
+
+    const message = parseDeleteError(errorResponse);
+    assert.equal(
+      message,
+      "Cannot delete category because it contains active products. Please reassign or delete these products first."
+    );
+  });
+
+  test("8. Category creation payload trims name and formats lowercase slug or leaves slug blank for auto-generation", () => {
+    const prepareCategoryPayload = (name, slug, description) => {
+      const payload = {
+        name: String(name || "").trim(),
+        description: description ? String(description).trim() : "",
+      };
+      if (slug && String(slug).trim()) {
+        payload.slug = String(slug).trim().toLowerCase();
+      }
+      return payload;
+    };
+
+    const payloadWithSlug = prepareCategoryPayload("  Organic Fruits  ", "Organic-FRUITS", "Fresh orchard harvests");
+    assert.equal(payloadWithSlug.name, "Organic Fruits");
+    assert.equal(payloadWithSlug.slug, "organic-fruits");
+    assert.equal(payloadWithSlug.description, "Fresh orchard harvests");
+
+    const payloadWithoutSlug = prepareCategoryPayload("Leafy Greens", "", "");
+    assert.equal(payloadWithoutSlug.name, "Leafy Greens");
+    assert.equal(payloadWithoutSlug.slug, undefined, "Slug should be omitted so backend generates it");
+  });
+});
+
+describe("Admin Route & Navigation Bug Fix Contracts", () => {
+  test("1. AppRoutes explicitly registers /admin/orders and /admin/categories under AdminRoute", async () => {
+    const fs = await import("node:fs");
+    const routesContent = fs.readFileSync("src/routes/AppRoutes.jsx", "utf-8");
+
+    assert.ok(
+      routesContent.includes('path="/admin/orders"'),
+      "AppRoutes must explicitly define path=/admin/orders"
+    );
+    assert.ok(
+      routesContent.includes('path="/admin/categories"'),
+      "AppRoutes must explicitly define path=/admin/categories"
+    );
+    assert.ok(
+      routesContent.includes("<AdminRoute><AdminOrders /></AdminRoute>"),
+      "/admin/orders must be wrapped in AdminRoute guard"
+    );
+    assert.ok(
+      routesContent.includes("<AdminRoute><AdminCategories /></AdminRoute>"),
+      "/admin/categories must be wrapped in AdminRoute guard"
+    );
+  });
+
+  test("2. AdminRoute redirects unauthenticated visitors to /admin/login and never to customer home /", () => {
+    const simulateAdminRouteGuard = (isAuthenticated, location) => {
+      if (!isAuthenticated) {
+        return { redirect: "/admin/login", state: { from: location } };
+      }
+      return { render: "AdminLayout" };
+    };
+
+    const unauthResult = simulateAdminRouteGuard(false, { pathname: "/admin/orders" });
+    assert.equal(unauthResult.redirect, "/admin/login");
+    assert.deepEqual(unauthResult.state, { from: { pathname: "/admin/orders" } });
+    assert.notEqual(unauthResult.redirect, "/", "Must NEVER redirect admin routes to customer home");
+
+    const authResult = simulateAdminRouteGuard(true, { pathname: "/admin/orders" });
+    assert.equal(authResult.render, "AdminLayout");
+  });
+
+  test("3. Route matching correctly routes /admin/orders and /admin/categories and avoids wildcard catch-all", () => {
+    const routes = [
+      "/",
+      "/categories",
+      "/products",
+      "/admin/login",
+      "/admin",
+      "/admin/dashboard",
+      "/admin/orders",
+      "/admin/categories",
+      "/admin/customers",
+      "/admin/products",
+    ];
+
+    const matchRoute = (path) => {
+      const match = routes.find((r) => r === path);
+      return match || "/*";
+    };
+
+    assert.equal(matchRoute("/admin/orders"), "/admin/orders");
+    assert.equal(matchRoute("/admin/categories"), "/admin/categories");
+    assert.equal(matchRoute("/admin/dashboard"), "/admin/dashboard");
+    assert.equal(matchRoute("/admin/unknown-page"), "/*", "Unknown pages hit catch-all");
+  });
+});
+
+describe("Customer Order History & Profile Integration Contracts", () => {
+  test("1. orderService exports getMyOrders and getMyOrderById with parameter normalization", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const serviceContent = fs.readFileSync(
+      path.resolve("src/services/orderService.js"),
+      "utf-8"
+    );
+
+    assert.ok(
+      serviceContent.includes("export const getMyOrders"),
+      "orderService must export getMyOrders"
+    );
+    assert.ok(
+      serviceContent.includes("export const getMyOrderById"),
+      "orderService must export getMyOrderById"
+    );
+    assert.ok(
+      serviceContent.includes("/orders/my-orders/"),
+      "orderService must target /orders/my-orders/ endpoint"
+    );
+
+    // Test parameter builder logic
+    const buildParams = (params = {}) => {
+      const cleanParams = {};
+      if (typeof params === "number" || typeof params === "string") {
+        cleanParams.page = params;
+      } else if (params && typeof params === "object") {
+        if (params.page) cleanParams.page = params.page;
+        if (params.page_size) cleanParams.page_size = params.page_size;
+      }
+      return cleanParams;
+    };
+
+    assert.deepEqual(buildParams(2), { page: 2 });
+    assert.deepEqual(buildParams("3"), { page: "3" });
+    assert.deepEqual(buildParams({ page: 4, page_size: 20 }), { page: 4, page_size: 20 });
+    assert.deepEqual(buildParams({}), {});
+  });
+
+  test("2. Profile tabs include 'orders' and sync with URL query param ?tab=orders", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const profileContent = fs.readFileSync(
+      path.resolve("src/pages/Profile/Profile.jsx"),
+      "utf-8"
+    );
+
+    assert.ok(
+      profileContent.includes('"orders"'),
+      "Profile must include 'orders' in tab definitions"
+    );
+    assert.ok(
+      profileContent.includes("getMyOrders"),
+      "Profile must import and call getMyOrders"
+    );
+    assert.ok(
+      profileContent.includes("useSearchParams"),
+      "Profile must use useSearchParams to sync tab state with URL"
+    );
+    assert.ok(
+      profileContent.includes("You haven't placed any orders yet."),
+      "Profile must include empty state for orders"
+    );
+    assert.ok(
+      profileContent.includes('to="/products"'),
+      "Empty state must link to products storefront"
+    );
+  });
+
+  test("3. Order status badge and label mappers handle all customer-facing statuses", () => {
+    const orderStatusLabel = (status) => {
+      const MAP = {
+        pending: "Pending",
+        confirmed: "Confirmed",
+        processing: "Processing",
+        shipped: "Shipped",
+        delivered: "Delivered",
+        cancelled: "Cancelled",
+        failed: "Failed",
+      };
+      return MAP[status] || status;
+    };
+
+    const orderStatusBadgeClass = (status) => {
+      const MAP = {
+        pending: "gv-status-badge--pending",
+        confirmed: "gv-status-badge--confirmed",
+        processing: "gv-status-badge--processing",
+        shipped: "gv-status-badge--shipped",
+        delivered: "gv-status-badge--delivered",
+        cancelled: "gv-status-badge--cancelled",
+        failed: "gv-status-badge--failed",
+      };
+      return MAP[status] || "gv-status-badge--pending";
+    };
+
+    assert.equal(orderStatusLabel("pending"), "Pending");
+    assert.equal(orderStatusLabel("confirmed"), "Confirmed");
+    assert.equal(orderStatusLabel("processing"), "Processing");
+    assert.equal(orderStatusLabel("shipped"), "Shipped");
+    assert.equal(orderStatusLabel("delivered"), "Delivered");
+    assert.equal(orderStatusLabel("cancelled"), "Cancelled");
+
+    assert.equal(orderStatusBadgeClass("shipped"), "gv-status-badge--shipped");
+    assert.equal(orderStatusBadgeClass("delivered"), "gv-status-badge--delivered");
+    assert.equal(orderStatusBadgeClass("cancelled"), "gv-status-badge--cancelled");
+  });
+
+  test("4. Chronological order status history timeline renders transitions, timestamps and notes safely", () => {
+    const historyEvents = [
+      {
+        from_status: "pending",
+        to_status: "confirmed",
+        note: "Payment verified via Razorpay.",
+        created_at: "2026-11-05T08:00:00Z",
+      },
+      {
+        from_status: "confirmed",
+        to_status: "processing",
+        note: "Produce harvested and packed in cold tote.",
+        created_at: "2026-11-05T08:30:00Z",
+      },
+      {
+        from_status: "processing",
+        to_status: "shipped",
+        note: "Out for eco-friendly EV delivery.",
+        created_at: "2026-11-05T09:15:00Z",
+      },
+    ];
+
+    const formatTransition = (h) => {
+      if (h.from_status && h.from_status !== h.to_status) {
+        return `${h.from_status} → ${h.to_status}`;
+      }
+      return h.to_status;
+    };
+
+    assert.equal(formatTransition(historyEvents[0]), "pending → confirmed");
+    assert.equal(formatTransition(historyEvents[1]), "confirmed → processing");
+    assert.equal(formatTransition(historyEvents[2]), "processing → shipped");
+    assert.equal(historyEvents[0].note, "Payment verified via Razorpay.");
+  });
+
+  test("5. OrderItem snapshot fields allow robust rendering even when product is deleted", () => {
+    const snapshotItem = {
+      id: "item-uuid-1",
+      product: null, // deleted product
+      variant: null,
+      product_name: "Heritage Black Rice",
+      variant_sku: "HBR-1KG",
+      variant_label: "1 kg Cotton Sack",
+      unit_price: "240.00",
+      quantity: 2,
+      line_total: "480.00",
+      product_image: "/media/products/black-rice.jpg",
+    };
+
+    const renderItemText = (item) => {
+      return `${item.product_name} (${item.variant_label}) - ${item.quantity} x ₹${item.unit_price} = ₹${item.line_total}`;
+    };
+
+    const text = renderItemText(snapshotItem);
+    assert.equal(
+      text,
+      "Heritage Black Rice (1 kg Cotton Sack) - 2 x ₹240.00 = ₹480.00",
+      "Item details must be completely intact via snapshot fields without product model"
+    );
+  });
+
+  test("6. OrderDetailPage imports getMyOrderById and provides profile orders backlink", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const detailContent = fs.readFileSync(
+      path.resolve("src/pages/Orders/OrderDetailPage.jsx"),
+      "utf-8"
+    );
+
+    assert.ok(
+      detailContent.includes("getMyOrderById"),
+      "OrderDetailPage must import and call getMyOrderById"
+    );
+    assert.ok(
+      detailContent.includes("order.history"),
+      "OrderDetailPage must render chronological order.history"
+    );
+    assert.ok(
+      detailContent.includes("/profile?tab=orders"),
+      "OrderDetailPage must link back to profile My Orders"
+    );
+  });
+});

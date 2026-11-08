@@ -1,5 +1,5 @@
 import { useState, useRef } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useLocation } from "react-router-dom";
 import {
   Leaf,
   Home,
@@ -29,6 +29,9 @@ import { validateRegistrationForm } from "../../utils/validation";
 
 export default function Register() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const searchParams = new URLSearchParams(location.search);
+  const redirectTarget = searchParams.get("redirect") || location.state?.redirect;
   const [form, setForm] = useState({
     full_name: "",
     email: "",
@@ -112,6 +115,7 @@ export default function Register() {
         navigate("/verify-otp", {
           state: {
             email: userEmail,
+            redirect: redirectTarget,
           },
         });
       }
@@ -124,7 +128,11 @@ export default function Register() {
     if (loading || isSubmittingRef.current) return;
     const res = await googleLogin(idToken);
     if (res.success) {
-      navigate("/");
+      if (redirectTarget && redirectTarget.startsWith("/") && !redirectTarget.startsWith("//")) {
+        navigate(redirectTarget);
+      } else {
+        navigate("/");
+      }
     }
   };
 

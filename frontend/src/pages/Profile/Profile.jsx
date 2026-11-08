@@ -1,7 +1,9 @@
-import React, { useEffect, useState, useMemo } from "react";
-import { Link } from "react-router-dom";
+import React, { useEffect, useState, useMemo, useCallback } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import useAuth from "../../hooks/useAuth";
 import { getProfile, updateProfile } from "../../services/profileService.js";
+import { getMyOrders } from "../../services/orderService.js";
+import { resolveImageUrl, formatPrice } from "../../services/productService.js";
 import Input from "../../components/common/Input";
 import Button from "../../components/common/Button";
 import Navbar from "../../components/layout/Navbar";
@@ -31,7 +33,72 @@ import {
   Trash2,
   Upload,
   Link2,
+  ShoppingBag,
+  CreditCard,
+  Banknote,
+  ArrowLeft,
+  ArrowRight,
+  Eye,
+  Clock,
+  Loader2,
 } from "lucide-react";
+
+/* ── Order Display Helpers ── */
+function orderStatusLabel(status) {
+  const MAP = {
+    pending: "Pending",
+    confirmed: "Confirmed",
+    processing: "Processing",
+    shipped: "Shipped",
+    delivered: "Delivered",
+    cancelled: "Cancelled",
+    failed: "Failed",
+  };
+  return MAP[status] || status;
+}
+
+function orderStatusBadgeClass(status) {
+  const MAP = {
+    pending: "gv-status-badge--pending",
+    confirmed: "gv-status-badge--confirmed",
+    processing: "gv-status-badge--processing",
+    shipped: "gv-status-badge--shipped",
+    delivered: "gv-status-badge--delivered",
+    cancelled: "gv-status-badge--cancelled",
+    failed: "gv-status-badge--failed",
+  };
+  return MAP[status] || "gv-status-badge--pending";
+}
+
+function paymentStatusLabel(status) {
+  const MAP = {
+    pending: "Payment Pending",
+    paid: "Paid",
+    failed: "Payment Failed",
+    cancelled: "Payment Cancelled",
+    refunded: "Refunded",
+  };
+  return MAP[status] || (status || "");
+}
+
+function paymentStatusBadgeClass(status) {
+  const MAP = {
+    pending: "gv-payment-status-badge--pending",
+    paid: "gv-payment-status-badge--paid",
+    failed: "gv-payment-status-badge--failed",
+    cancelled: "gv-payment-status-badge--cancelled",
+  };
+  return MAP[status] || "gv-payment-status-badge--pending";
+}
+
+function formatDateShort(iso) {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleDateString("en-IN", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+}
 
 // Curated high-resolution organic portraits for instant selection
 const CURATED_AVATARS = [
@@ -75,15 +142,82 @@ const CURATED_AVATARS = [
 
 export default function Profile() {
   const { user, isAuthenticated, isInitializing, logout, updateUser } = useAuth();
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  const VALID_TABS = useMemo(() => ["all", "orders", "personal", "addresses", "preferences", "security"], []);
+  const urlTab = searchParams.get("tab");
+  const [activeTab, setActiveTabState] = useState(
+    VALID_TABS.includes(urlTab) ? urlTab : "all"
+  );
+
+  const setActiveTab = useCallback((newTab) => {
+    setActiveTabState(newTab);
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (newTab === "all") {
+        next.delete("tab");
+      } else {
+        next.set("tab", newTab);
+      }
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
+
+  useEffect(() => {
+    const tabFromUrl = searchParams.get("tab");
+    if (tabFromUrl && VALID_TABS.includes(tabFromUrl) && tabFromUrl !== activeTab) {
+      setActiveTabState(tabFromUrl);
+    }
+  }, [searchParams, VALID_TABS, activeTab]);
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [profile, setProfile] = useState(null);
-  const [activeTab, setActiveTab] = useState("all"); // 'all' | 'personal' | 'addresses' | 'preferences' | 'security'
   const [personalEditing, setPersonalEditing] = useState(false);
   const [addressEditing, setAddressEditing] = useState(false);
   const [successMessage, setSuccessMessage] = useState("");
+
+  // Customer Orders state
+  const [orders, setOrders] = useState([]);
+  const [ordersLoading, setOrdersLoading] = useState(false);
+  const [ordersError, setOrdersError] = useState("");
+  const [ordersPage, setOrdersPage] = useState(1);
+  const [ordersTotalPages, setOrdersTotalPages] = useState(1);
+  const [ordersTotalCount, setOrdersTotalCount] = useState(0);
+
+  const fetchCustomerOrders = useCallback(async (page = 1) => {
+    try {
+      setOrdersLoading(true);
+      setOrdersError("");
+      const data = await getMyOrders({ page });
+      if (Array.isArray(data)) {
+        setOrders(data);
+        setOrdersTotalPages(1);
+        setOrdersTotalCount(data.length);
+      } else {
+        setOrders(data.results || []);
+        const count = data.count || 0;
+        const perPage = (data.results && data.results.length > 0) ? data.results.length : 10;
+        const pages = count ? Math.ceil(count / (perPage || 10)) : 1;
+        setOrdersTotalPages(pages);
+        setOrdersTotalCount(count);
+      }
+    } catch (err) {
+      console.error("Failed to fetch customer orders:", err);
+      setOrdersError(
+        err?.response?.data?.detail || "Could not load your orders. Please try again."
+      );
+    } finally {
+      setOrdersLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (isAuthenticated && (activeTab === "orders" || activeTab === "all")) {
+      fetchCustomerOrders(ordersPage);
+    }
+  }, [isAuthenticated, activeTab, ordersPage, fetchCustomerOrders]);
 
   // Change Photo Modal state
   const [photoModalOpen, setPhotoModalOpen] = useState(false);
@@ -585,6 +719,31 @@ export default function Profile() {
                   <li>
                     <button
                       type="button"
+                      className={`gv-nav-item ${activeTab === "orders" ? "is-active" : ""}`}
+                      onClick={() => setActiveTab("orders")}
+                    >
+                      <ShoppingBag size={17} className="gv-nav-item-icon" />
+                      <span>My Orders</span>
+                      {ordersTotalCount > 0 && (
+                        <span
+                          style={{
+                            marginLeft: "auto",
+                            fontSize: "0.75rem",
+                            padding: "0.15rem 0.5rem",
+                            borderRadius: "999px",
+                            backgroundColor: activeTab === "orders" ? "#166534" : "#e5e7eb",
+                            color: activeTab === "orders" ? "#ffffff" : "#374151",
+                            fontWeight: 600,
+                          }}
+                        >
+                          {ordersTotalCount}
+                        </span>
+                      )}
+                    </button>
+                  </li>
+                  <li>
+                    <button
+                      type="button"
                       className={`gv-nav-item ${activeTab === "personal" ? "is-active" : ""}`}
                       onClick={() => setActiveTab("personal")}
                     >
@@ -656,6 +815,333 @@ export default function Profile() {
                   <AlertCircle size={18} />
                   <span>{error}</span>
                 </div>
+              )}
+
+              {/* SECTION: MY ORDERS (FULL VIEW) */}
+              {activeTab === "orders" && (
+                <article className="gv-dashboard-card gv-content-card">
+                  <header className="gv-card-header">
+                    <div>
+                      <h2 className="gv-card-title">My Orders</h2>
+                      <p className="gv-card-subtitle">
+                        Track deliveries, view order invoices, and review your farm-fresh purchase history.
+                      </p>
+                    </div>
+
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => fetchCustomerOrders(ordersPage)}
+                      disabled={ordersLoading}
+                      icon={<RefreshCw size={14} className={ordersLoading ? "gv-spin" : ""} />}
+                    >
+                      Refresh
+                    </Button>
+                  </header>
+
+                  {/* Orders Loading State */}
+                  {ordersLoading && (
+                    <div style={{ textAlign: "center", padding: "3rem 1rem" }}>
+                      <Loader2 size={36} className="gv-spin" style={{ color: "#08712f", margin: "0 auto 1rem" }} />
+                      <p style={{ color: "#6b7280", fontSize: "0.95rem" }}>Loading your orders...</p>
+                    </div>
+                  )}
+
+                  {/* Orders Error State */}
+                  {!ordersLoading && ordersError && (
+                    <div className="gv-alert gv-alert--error" style={{ marginBottom: "1.5rem" }} role="alert">
+                      <AlertCircle size={18} />
+                      <span style={{ flex: 1 }}>{ordersError}</span>
+                      <button
+                        type="button"
+                        onClick={() => fetchCustomerOrders(ordersPage)}
+                        style={{
+                          background: "transparent",
+                          border: "none",
+                          color: "inherit",
+                          fontWeight: 700,
+                          cursor: "pointer",
+                          textDecoration: "underline",
+                        }}
+                      >
+                        Retry
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Empty State */}
+                  {!ordersLoading && !ordersError && orders.length === 0 && (
+                    <div className="gv-empty-state-card" style={{ textAlign: "center", padding: "3rem 1.5rem" }}>
+                      <ShoppingBag size={52} className="gv-icon-muted" style={{ margin: "0 auto 1.25rem", color: "#9ca3af" }} />
+                      <h3 style={{ fontSize: "1.2rem", fontWeight: 700, color: "#111", marginBottom: "0.5rem" }}>
+                        You haven't placed any orders yet.
+                      </h3>
+                      <p style={{ fontSize: "0.9rem", color: "#6b7280", maxWidth: "420px", margin: "0 auto 1.5rem", lineHeight: 1.5 }}>
+                        Your order history will appear here once you place your first order.
+                      </p>
+                      <Link
+                        to="/products"
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "0.5rem",
+                          background: "#08712f",
+                          color: "#ffffff",
+                          padding: "0.75rem 1.5rem",
+                          borderRadius: "10px",
+                          fontWeight: 700,
+                          fontSize: "0.95rem",
+                          textDecoration: "none",
+                          boxShadow: "0 2px 8px rgba(8,113,47,0.2)",
+                        }}
+                      >
+                        <ShoppingBag size={18} /> Start Shopping
+                      </Link>
+                    </div>
+                  )}
+
+                  {/* Orders List */}
+                  {!ordersLoading && !ordersError && orders.length > 0 && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+                      {orders.map((ord) => (
+                        <div
+                          key={ord.id}
+                          style={{
+                            background: "#ffffff",
+                            border: "1px solid #e5e7eb",
+                            borderRadius: "14px",
+                            padding: "1.25rem",
+                            transition: "all 0.2s ease",
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: "1rem",
+                          }}
+                        >
+                          {/* Order Card Top Bar */}
+                          <div
+                            style={{
+                              display: "flex",
+                              justifyContent: "space-between",
+                              alignItems: "flex-start",
+                              flexWrap: "wrap",
+                              gap: "0.75rem",
+                              borderBottom: "1px solid #f3f4f6",
+                              paddingBottom: "0.75rem",
+                            }}
+                          >
+                            <div>
+                              <div style={{ display: "flex", alignItems: "center", gap: "0.6rem" }}>
+                                <span style={{ fontWeight: 800, fontSize: "0.95rem", color: "#111827", fontFamily: "monospace" }}>
+                                  #{ord.order_number}
+                                </span>
+                                <span style={{ fontSize: "0.8rem", color: "#6b7280" }}>
+                                  Placed on {formatDateShort(ord.created_at)}
+                                </span>
+                              </div>
+                            </div>
+
+                            <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "center" }}>
+                              <span className={`gv-status-badge ${orderStatusBadgeClass(ord.status)}`}>
+                                {orderStatusLabel(ord.status)}
+                              </span>
+                              {ord.payment_status && (
+                                <span className={`gv-payment-status-badge ${paymentStatusBadgeClass(ord.payment_status)}`}>
+                                  {paymentStatusLabel(ord.payment_status)}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Order Card Content Bar */}
+                          <div
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "space-between",
+                              flexWrap: "wrap",
+                              gap: "1rem",
+                            }}
+                          >
+                            {/* Product Thumbnail & Meta */}
+                            <div style={{ display: "flex", alignItems: "center", gap: "1rem", minWidth: 0 }}>
+                              <div
+                                style={{
+                                  width: "56px",
+                                  height: "56px",
+                                  borderRadius: "10px",
+                                  overflow: "hidden",
+                                  background: "#f9fafb",
+                                  border: "1px solid #e5e7eb",
+                                  display: "flex",
+                                  alignItems: "center",
+                                  justifyContent: "center",
+                                  flexShrink: 0,
+                                }}
+                              >
+                                {ord.product_image ? (
+                                  <img
+                                    src={resolveImageUrl(ord.product_image)}
+                                    alt={`Order ${ord.order_number}`}
+                                    style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                                    onError={(e) => {
+                                      e.target.style.display = "none";
+                                      if (e.target.nextSibling) e.target.nextSibling.style.display = "block";
+                                    }}
+                                  />
+                                ) : null}
+                                <ShoppingBag
+                                  size={22}
+                                  style={{
+                                    color: "#9ca3af",
+                                    display: ord.product_image ? "none" : "block",
+                                  }}
+                                />
+                              </div>
+
+                              <div>
+                                <div style={{ fontSize: "0.85rem", color: "#374151", fontWeight: 600 }}>
+                                  {ord.item_count != null
+                                    ? `${ord.item_count} item${ord.item_count !== 1 ? "s" : ""}`
+                                    : "Items ordered"}
+                                </div>
+                                <div style={{ fontSize: "0.78rem", color: "#6b7280", marginTop: "0.2rem", display: "flex", alignItems: "center", gap: "0.35rem" }}>
+                                  {ord.payment_method === "online" ? <CreditCard size={13} /> : <Banknote size={13} />}
+                                  <span>{ord.payment_method === "online" ? "Online Payment" : "Cash on Delivery"}</span>
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Total Amount & Action */}
+                            <div style={{ display: "flex", alignItems: "center", gap: "1.25rem", marginLeft: "auto" }}>
+                              <div style={{ textAlign: "right" }}>
+                                <span style={{ fontSize: "0.75rem", color: "#6b7280", display: "block" }}>Total</span>
+                                <span style={{ fontSize: "1.1rem", fontWeight: 800, color: "#111827" }}>
+                                  {formatPrice(ord.total_amount)}
+                                </span>
+                              </div>
+
+                              <Link
+                                to={`/orders/${ord.id}`}
+                                style={{
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: "0.4rem",
+                                  padding: "0.55rem 1rem",
+                                  borderRadius: "8px",
+                                  border: "1.5px solid #d1d5db",
+                                  background: "#ffffff",
+                                  color: "#111827",
+                                  fontWeight: 600,
+                                  fontSize: "0.85rem",
+                                  textDecoration: "none",
+                                  transition: "all 0.15s ease",
+                                }}
+                              >
+                                <Eye size={15} />
+                                <span>View Details</span>
+                              </Link>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+
+                      {/* Pagination Controls */}
+                      {ordersTotalPages > 1 && (
+                        <div className="gv-pagination" style={{ marginTop: "1rem" }}>
+                          <button
+                            type="button"
+                            className="gv-pagination-btn"
+                            onClick={() => setOrdersPage((p) => Math.max(1, p - 1))}
+                            disabled={ordersPage <= 1}
+                          >
+                            <ArrowLeft size={15} /> Previous
+                          </button>
+                          <span className="gv-pagination-info">
+                            Page {ordersPage} of {ordersTotalPages}
+                          </span>
+                          <button
+                            type="button"
+                            className="gv-pagination-btn"
+                            onClick={() => setOrdersPage((p) => Math.min(ordersTotalPages, p + 1))}
+                            disabled={ordersPage >= ordersTotalPages}
+                          >
+                            Next <ArrowRight size={15} />
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </article>
+              )}
+
+              {/* RECENT ORDERS OVERVIEW PREVIEW */}
+              {activeTab === "all" && (
+                <article className="gv-dashboard-card gv-content-card">
+                  <header className="gv-card-header">
+                    <div>
+                      <h2 className="gv-card-title">Recent Orders</h2>
+                      <p className="gv-card-subtitle">
+                        Your latest purchases and farm deliveries.
+                      </p>
+                    </div>
+
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => setActiveTab("orders")}
+                      icon={<ChevronRight size={14} />}
+                    >
+                      View All Orders {ordersTotalCount > 0 ? `(${ordersTotalCount})` : ""}
+                    </Button>
+                  </header>
+
+                  {ordersLoading ? (
+                    <div style={{ textAlign: "center", padding: "1.5rem" }}>
+                      <Loader2 size={24} className="gv-spin" style={{ color: "#08712f", margin: "0 auto" }} />
+                    </div>
+                  ) : orders.length === 0 ? (
+                    <div style={{ textAlign: "center", padding: "1.5rem", color: "#6b7280" }}>
+                      <p style={{ margin: "0 0 0.75rem 0", fontSize: "0.9rem" }}>You haven't placed any orders yet.</p>
+                      <Link to="/products" className="gv-text-link">Explore Organic Harvest</Link>
+                    </div>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+                      {orders.slice(0, 3).map((ord) => (
+                        <div
+                          key={ord.id}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            flexWrap: "wrap",
+                            gap: "0.75rem",
+                            padding: "0.75rem 1rem",
+                            background: "#f9fafb",
+                            borderRadius: "10px",
+                            border: "1px solid #e5e7eb",
+                          }}
+                        >
+                          <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+                            <span style={{ fontWeight: 700, fontFamily: "monospace", fontSize: "0.85rem" }}>
+                              #{ord.order_number}
+                            </span>
+                            <span className={`gv-status-badge ${orderStatusBadgeClass(ord.status)}`} style={{ fontSize: "0.7rem", padding: "0.15rem 0.5rem" }}>
+                              {orderStatusLabel(ord.status)}
+                            </span>
+                          </div>
+                          <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
+                            <span style={{ fontWeight: 700, fontSize: "0.9rem" }}>
+                              {formatPrice(ord.total_amount)}
+                            </span>
+                            <Link to={`/orders/${ord.id}`} className="gv-text-link" style={{ fontSize: "0.8rem" }}>
+                              Details
+                            </Link>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </article>
               )}
 
               {/* SECTION 1: PERSONAL INFORMATION */}

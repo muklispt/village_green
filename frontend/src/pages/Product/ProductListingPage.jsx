@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
-import { useSearchParams, Link } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
 import {
   Search,
   Filter,
@@ -22,40 +22,54 @@ import { getCategories, getProducts } from "../../services/productService";
 export default function ProductListingPage() {
   const [searchParams, setSearchParams] = useSearchParams();
 
-  // Query parameters from URL
-  const initialCategory = searchParams.get("category") || "all";
+  // Query parameters from URL (single source of truth)
+  const selectedCategory = searchParams.get("category") || "all";
   const initialSearch = searchParams.get("search") || "";
-  const initialPage = parseInt(searchParams.get("page") || "1", 10);
+  const currentPage = parseInt(searchParams.get("page") || "1", 10);
 
   // States
   const [categories, setCategories] = useState([]);
   const [productsData, setProductsData] = useState({ count: 0, next: null, previous: null, results: [] });
   const [searchTerm, setSearchTerm] = useState(initialSearch);
   const [debouncedSearch, setDebouncedSearch] = useState(initialSearch);
-  const [selectedCategory, setSelectedCategory] = useState(initialCategory);
-  const [currentPage, setCurrentPage] = useState(initialPage);
   const [sortBy, setSortBy] = useState("newest");
   const [inStockOnly, setInStockOnly] = useState(false);
-  const [priceMax, setPriceMax] = useState(1000);
+  const [priceMax, setPriceMax] = useState(10000);
   const [viewMode, setViewMode] = useState("grid"); // 'grid' | 'list'
   const [mobileFilterOpen, setMobileFilterOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
+  const setCurrentPage = useCallback((val) => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      const newPage = typeof val === "function" ? val(currentPage) : val;
+      if (newPage > 1) {
+        next.set("page", String(newPage));
+      } else {
+        next.delete("page");
+      }
+      return next;
+    });
+  }, [currentPage, setSearchParams]);
+
   // Debounce search input (400ms)
   useEffect(() => {
     const timer = setTimeout(() => {
       setDebouncedSearch(searchTerm);
-      setCurrentPage(1);
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        if (searchTerm) {
+          next.set("search", searchTerm);
+        } else {
+          next.delete("search");
+        }
+        next.delete("page");
+        return next;
+      });
     }, 400);
     return () => clearTimeout(timer);
-  }, [searchTerm]);
-
-  // Sync category from URL param if user navigates back/forward
-  useEffect(() => {
-    const cat = searchParams.get("category") || "all";
-    setSelectedCategory(cat);
-  }, [searchParams]);
+  }, [searchTerm, setSearchParams]);
 
   // Load categories
   useEffect(() => {
@@ -75,35 +89,44 @@ export default function ProductListingPage() {
   }, []);
 
   // Fetch products from API based on search & page
-  const fetchProducts = useCallback(async () => {
-    try {
-      setLoading(true);
-      setError(null);
-      const data = await getProducts({
-        search: debouncedSearch,
-        page: currentPage,
-        categoryId: selectedCategory !== "all" ? selectedCategory : undefined,
-      });
-      setProductsData(data);
-    } catch (err) {
-      setError("Unable to load marketplace products. Please check your network connection.");
-    } finally {
-      setLoading(false);
-    }
+  useEffect(() => {
+    let isMounted = true;
+    (async () => {
+      try {
+        const data = await getProducts({
+          search: debouncedSearch,
+          page: currentPage,
+          categoryId: selectedCategory !== "all" ? selectedCategory : undefined,
+        });
+        if (isMounted) {
+          setError(null);
+          setProductsData(data);
+          setLoading(false);
+        }
+      } catch {
+        if (isMounted) {
+          setError("Unable to load marketplace products. Please check your network connection.");
+          setLoading(false);
+        }
+      }
+    })();
+    return () => {
+      isMounted = false;
+    };
   }, [debouncedSearch, currentPage, selectedCategory]);
 
-  useEffect(() => {
-    fetchProducts();
-  }, [fetchProducts]);
-
-  // Update URL search params
-  useEffect(() => {
-    const params = {};
-    if (selectedCategory && selectedCategory !== "all") params.category = selectedCategory;
-    if (debouncedSearch) params.search = debouncedSearch;
-    if (currentPage > 1) params.page = currentPage.toString();
-    setSearchParams(params, { replace: true });
-  }, [selectedCategory, debouncedSearch, currentPage, setSearchParams]);
+  const handleRetry = () => {
+    setLoading(true);
+    setError(null);
+    getProducts({
+      search: debouncedSearch,
+      page: currentPage,
+      categoryId: selectedCategory !== "all" ? selectedCategory : undefined,
+    })
+      .then((data) => setProductsData(data))
+      .catch(() => setError("Unable to load marketplace products. Please check your network connection."))
+      .finally(() => setLoading(false));
+  };
 
   // Handle client-side sorting & filters (stock & price)
   const displayedProducts = useMemo(() => {
@@ -145,27 +168,34 @@ export default function ProductListingPage() {
 
   // Category switch handler
   const handleCategorySelect = (catId) => {
-    setSelectedCategory(catId);
-    setCurrentPage(1);
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (catId && catId !== "all") {
+        next.set("category", catId);
+      } else {
+        next.delete("category");
+      }
+      next.delete("page");
+      return next;
+    });
     setMobileFilterOpen(false);
   };
 
   // Reset all filters
   const handleResetFilters = () => {
-    setSelectedCategory("all");
     setSearchTerm("");
     setDebouncedSearch("");
+    setSearchParams({});
     setInStockOnly(false);
-    setPriceMax(1000);
+    setPriceMax(10000);
     setSortBy("newest");
-    setCurrentPage(1);
   };
 
   const hasActiveFilters =
     selectedCategory !== "all" ||
     debouncedSearch !== "" ||
     inStockOnly ||
-    priceMax < 1000;
+    priceMax < 10000;
 
   // Pagination calculation
   const totalCount = productsData.count || 0;
@@ -361,8 +391,8 @@ export default function ProductListingPage() {
                   <input
                     type="range"
                     min="50"
-                    max="1000"
-                    step="25"
+                    max="10000"
+                    step="50"
                     value={priceMax}
                     onChange={(e) => setPriceMax(Number(e.target.value))}
                     className="gv-range-slider"
@@ -370,7 +400,7 @@ export default function ProductListingPage() {
                   />
                   <div className="gv-range-labels">
                     <span>₹50</span>
-                    <span>₹1,000</span>
+                    <span>₹10,000</span>
                   </div>
                 </div>
 
@@ -411,7 +441,7 @@ export default function ProductListingPage() {
                   <button
                     type="button"
                     className="gv-btn-retry"
-                    onClick={fetchProducts}
+                    onClick={handleRetry}
                   >
                     <RefreshCw size={14} /> Retry
                   </button>

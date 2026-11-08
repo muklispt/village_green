@@ -282,26 +282,125 @@ export const deleteAdminProduct = async (id) => {
 };
 
 /**
- * Fetch all product categories
+ * Valid order status transitions definition aligned with backend business logic
  */
-export const getAdminCategories = async () => {
-  const response = await api.get("/product/categories/");
-  return Array.isArray(response.data) ? response.data : response.data?.results || [];
+export const ORDER_VALID_TRANSITIONS = {
+  PENDING: ["CONFIRMED", "CANCELLED"],
+  CONFIRMED: ["PROCESSING", "CANCELLED"],
+  PROCESSING: ["SHIPPED", "CANCELLED"],
+  SHIPPED: ["DELIVERED"],
+  DELIVERED: [],
+  CANCELLED: [],
 };
 
 /**
- * Create a new produce category
+ * Get valid next statuses for a given order status
+ * @param {string} currentStatus
+ * @returns {string[]}
  */
-export const createAdminCategory = async (data) => {
-  const response = await api.post("/product/categories/", data);
+export const getValidOrderTransitions = (currentStatus) => {
+  if (!currentStatus) return [];
+  const normalized = String(currentStatus).toUpperCase();
+  return ORDER_VALID_TRANSITIONS[normalized] || [];
+};
+
+/**
+ * Fetch paginated admin orders with search and multi-criteria filters
+ * @param {Object} params - { page, page_size, search, status, payment_status, payment_method, date_from, date_to }
+ */
+export const getAdminOrders = async (params = {}) => {
+  const cleanParams = {};
+  if (params.page) cleanParams.page = params.page;
+  if (params.page_size) cleanParams.page_size = params.page_size;
+  if (params.search && params.search.trim()) cleanParams.search = params.search.trim();
+  if (params.status && params.status !== "all") cleanParams.status = params.status;
+  if (params.payment_status && params.payment_status !== "all") cleanParams.payment_status = params.payment_status;
+  if (params.payment_method && params.payment_method !== "all") cleanParams.payment_method = params.payment_method;
+  if (params.date_from) cleanParams.date_from = params.date_from;
+  if (params.date_to) cleanParams.date_to = params.date_to;
+
+  const response = await api.get("/admin/orders/", { params: cleanParams });
   return response.data;
 };
 
 /**
- * Delete a category
+ * Fetch full order detail by ID/UUID
+ * @param {string} orderId
+ */
+export const getAdminOrderById = async (orderId) => {
+  const response = await api.get(`/admin/orders/${orderId}/`);
+  return response.data;
+};
+
+/**
+ * Update order status with audit notes
+ * @param {string} orderId
+ * @param {Object} payload - { status, notes }
+ */
+export const updateAdminOrderStatus = async (orderId, payload = {}) => {
+  const response = await api.patch(`/admin/orders/${orderId}/status/`, payload);
+  return response.data;
+};
+
+/**
+ * Cancel an order as admin with mandatory or optional reason
+ * @param {string} orderId
+ * @param {Object} payload - { reason }
+ */
+export const cancelAdminOrder = async (orderId, payload = {}) => {
+  const response = await api.post(`/admin/orders/${orderId}/cancel/`, payload);
+  return response.data;
+};
+
+/**
+ * Fetch paginated category list with search, ordering, and count
+ * @param {Object} params - { page, page_size, search, ordering, all }
+ */
+export const getAdminCategoriesList = async (params = {}) => {
+  const cleanParams = {};
+  if (params.page) cleanParams.page = params.page;
+  if (params.page_size) cleanParams.page_size = params.page_size;
+  if (params.search && params.search.trim()) cleanParams.search = params.search.trim();
+  if (params.ordering) cleanParams.ordering = params.ordering;
+  if (params.all) cleanParams.all = "true";
+
+  const response = await api.get("/admin/categories/", { params: cleanParams });
+  return response.data;
+};
+
+/**
+ * Fetch all product categories unpaginated (e.g. for selectors)
+ */
+export const getAdminCategories = async () => {
+  const response = await api.get("/admin/categories/?all=true");
+  return Array.isArray(response.data) ? response.data : response.data?.results || [];
+};
+
+/**
+ * Create a new product category
+ * @param {Object} data - { name, slug, description }
+ */
+export const createAdminCategory = async (data) => {
+  const response = await api.post("/admin/categories/", data);
+  return response.data;
+};
+
+/**
+ * Update an existing product category
+ * @param {string} id
+ * @param {Object} data - { name, slug, description }
+ */
+export const updateAdminCategory = async (id, data) => {
+  const response = await api.patch(`/admin/categories/${id}/`, data);
+  return response.data;
+};
+
+/**
+ * Delete a category (safe backend deletion enforced)
+ * @param {string} id
  */
 export const deleteAdminCategory = async (id) => {
-  const response = await api.delete(`/product/categories/${id}/`);
+  const response = await api.delete(`/admin/categories/${id}/`);
   return response.data;
 };
 
