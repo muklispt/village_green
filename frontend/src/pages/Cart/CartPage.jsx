@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
+import CheckoutAuthModal from "../../components/checkout/CheckoutAuthModal";
 import {
   ShoppingBag,
   Trash2,
@@ -34,7 +35,9 @@ const FREE_DELIVERY_THRESHOLD = 500; // in INR (₹)
 const STANDARD_DELIVERY_FEE = 40;
 
 export default function CartPage() {
+  const navigate = useNavigate();
   const { isAuthenticated } = useAuth();
+  const [showAuthModal, setShowAuthModal] = useState(false);
   const {
     cartItems,
     subtotal,
@@ -157,14 +160,11 @@ export default function CartPage() {
       showToast("Please resolve unavailable or out-of-stock items before checkout.");
       return;
     }
-
-    alert(
-      `Green Village Checkout Demonstration\n\nSubtotal: ₹${subtotal.toFixed(
-        2
-      )}\nDelivery: ${deliveryFee === 0 ? "FREE" : "₹" + deliveryFee.toFixed(2)}\nEstimated Total: ₹${estimatedTotal.toFixed(
-        2
-      )}\nTotal Items: ${totalCount}\n\n(Checkout & Payment Gateway integration is operational for demonstration)`
-    );
+    if (!isAuthenticated) {
+      setShowAuthModal(true);
+      return;
+    }
+    navigate("/checkout");
   };
 
   return (
@@ -723,6 +723,11 @@ export default function CartPage() {
       </main>
 
       <Footer />
+
+      <CheckoutAuthModal
+        isOpen={showAuthModal}
+        onClose={() => setShowAuthModal(false)}
+      />
     </div>
   );
 }

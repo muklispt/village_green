@@ -24,11 +24,53 @@ from .validators import validate_product_image_file,MAX_IMAGE_PER_PRODUCT
 
 
 
+class CategoryPagination(ProductPagination):
+    page_size = 10
+    page_size_query_param = 'page_size'
+    max_page_size = 100
+
+    def paginate_queryset(self, queryset, request, view=None):
+        if request.query_params.get('all') == 'true' or request.query_params.get('paginate') == 'false':
+            return None
+        return super().paginate_queryset(queryset, request, view)
+
+
 class ProductCategoryViewSet(ModelViewSet):
-    queryset = ProductCategory.objects.all()
+    queryset = ProductCategory.objects.annotate(products_count=Count('products')).order_by('name')
     serializer_class = ProductCategorySerializer
+    pagination_class = CategoryPagination
+    filter_backends = [SearchFilter, OrderingFilter]
+    search_fields = ['name', 'description', 'slug']
+    ordering_fields = ['name', 'created_at', 'products_count']
+    ordering = ['name']
     authentication_classes = [SafeStorefrontJWTAuthentication]
     permission_classes = [IsAdminOrReadOnly]
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        product_count = instance.products.count()
+        if product_count > 0:
+            return Response(
+                {
+                    'detail': f"Cannot delete category '{instance.name}' because it contains {product_count} product(s). Please reassign or delete these products first.",
+                    'category_id': str(instance.id),
+                    'category_name': instance.name,
+                    'products_count': product_count,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            self.perform_destroy(instance)
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        except models.ProtectedError:
+            return Response(
+                {
+                    'detail': f"Cannot delete category '{instance.name}' because associated products are protected.",
+                    'category_id': str(instance.id),
+                    'category_name': instance.name,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
 
 def is_admin_or_staff(request):

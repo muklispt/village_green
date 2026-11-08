@@ -146,6 +146,7 @@ class Payment(models.Model):
     )
     provider_order_id = models.CharField(max_length=100,blank=True)
     provider_payment_id = models.CharField(max_length=100,blank=True)
+    checkout_url = models.URLField(max_length=500,blank=True)
     failure_reason = models.CharField(max_length=20,blank=True)
     paid_at = models.DateTimeField(null=True,blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -187,3 +188,20 @@ class OrderStatusHistory(models.Model):
     class Meta:
         db_table = 'order_status_history'
         ordering = ['created_at','id']
+
+
+class WebhookDelivery(models.Model):
+    """Durable record of received and processed webhook delivery IDs."""
+    id = models.BigAutoField(primary_key=True)
+    delivery_id = models.CharField(max_length=120, unique=True, db_index=True)
+    provider = models.CharField(max_length=30, blank=True, default='')
+    event = models.CharField(max_length=50)
+    order = models.ForeignKey(Order, on_delete=models.SET_NULL, null=True, blank=True, related_name='webhook_deliveries')
+    received_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'order_webhook_delivery'
+        ordering = ['-received_at']
+
+    def __str__(self):
+        return f'{self.provider}:{self.event}:{self.delivery_id}'

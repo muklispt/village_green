@@ -10,12 +10,18 @@ import VerifyOTP from "../pages/Auth/VerifyOTP";
 import ForgotPassword from "../pages/Auth/ForgotPassword";
 import ResetPassword from "../pages/Auth/ResetPassword";
 import Profile from "../pages/Profile/Profile";
+import CheckoutPage from "../pages/Checkout/CheckoutPage";
+import OrderDetailPage from "../pages/Orders/OrderDetailPage";
+import OrderHistoryPage from "../pages/Orders/OrderHistoryPage";
+import PaymentReturnPage from "../pages/Payment/PaymentReturnPage";
 import PrivateRoute from "../components/PrivateRoute";
 import AdminRoute from "../components/admin/AdminRoute";
 import AdminLogin from "../pages/Admin/AdminLogin";
 import AdminDashboard from "../pages/Admin/AdminDashboard";
 import AdminCustomers from "../pages/Admin/AdminCustomers";
 import AdminProducts from "../pages/Admin/AdminProducts";
+import AdminOrders from "../pages/Admin/AdminOrders";
+import AdminCategories from "../pages/Admin/AdminCategories";
 
 /**
  * Main application routes
@@ -30,6 +36,10 @@ export default function AppRoutes() {
       <Route path="/marketplace" element={<Navigate to="/products" replace />} />
       <Route path="/products/:id" element={<ProductDetailsPage />} />
       <Route path="/cart" element={<CartPage />} />
+      <Route path="/checkout" element={<CheckoutPage />} />
+      <Route path="/orders" element={<PrivateRoute><OrderHistoryPage /></PrivateRoute>} />
+      <Route path="/orders/:id" element={<PrivateRoute><OrderDetailPage /></PrivateRoute>} />
+      <Route path="/payment/return" element={<PaymentReturnPage />} />
 
       {/* Auth & Patron Account Routes */}
       <Route path="/register" element={<Register />} />
@@ -44,6 +54,8 @@ export default function AppRoutes() {
       <Route path="/admin/login" element={<AdminLogin />} />
       <Route path="/admin" element={<AdminRoute><AdminDashboard /></AdminRoute>} />
       <Route path="/admin/dashboard" element={<AdminRoute><AdminDashboard /></AdminRoute>} />
+      <Route path="/admin/orders" element={<AdminRoute><AdminOrders /></AdminRoute>} />
+      <Route path="/admin/categories" element={<AdminRoute><AdminCategories /></AdminRoute>} />
       <Route path="/admin/customers" element={<AdminRoute><AdminCustomers /></AdminRoute>} />
       <Route path="/admin/products" element={<AdminRoute><AdminProducts /></AdminRoute>} />
 

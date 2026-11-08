@@ -62,7 +62,6 @@ export default function GoogleAuthButton({
           theme="outline"
           shape="rectangular"
           size="large"
-          width="100%"
           useOneTap={false}
           auto_select={false}
         />

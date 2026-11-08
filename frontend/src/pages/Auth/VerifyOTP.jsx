@@ -36,6 +36,7 @@ export default function VerifyOTP() {
       : null;
 
   const email = (emailFromState || emailParam || emailFromStorage || "").trim();
+  const redirectParam = searchParams.get("redirect") || location.state?.redirect;
 
   // Verification state
   const [otp, setOtp] = useState("");
@@ -174,7 +175,11 @@ export default function VerifyOTP() {
 
       setTimeout(() => {
         if (isMountedRef.current) {
-          navigate("/login");
+          if (redirectParam && redirectParam.startsWith("/") && !redirectParam.startsWith("//")) {
+            navigate(`/login?redirect=${encodeURIComponent(redirectParam)}`);
+          } else {
+            navigate("/login");
+          }
         }
       }, 1500);
     } catch (error) {

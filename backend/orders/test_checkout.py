@@ -123,6 +123,7 @@ class CheckoutSuccessTests(OrderBase):
         self.assertEqual(order.payment.status, PaymentStatus.PENDING)
         self.assertEqual(order.items.get().quantity, 1)
 
+    @override_settings(RAZORPAY_KEY_ID='', RAZORPAY_KEY_SECRET='')
     def test_online_payment_is_refused_until_a_provider_exists(self):
         put_in_cart(self.user, self.rice, 1)
         response = self.checkout(payment_method='online')
@@ -373,4 +374,3 @@ class CheckoutThrottleTests(OrderBase):
 # ssl certificat
 # https://certbot.eff.org/
 
-# https://github.com/youpi-pg/YouPI-PG

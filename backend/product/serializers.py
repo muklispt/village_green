@@ -12,6 +12,13 @@ from .validators import validate_product_image_file, validate_product_video_file
 
 
 class ProductCategorySerializer(serializers.ModelSerializer):
+    products_count = serializers.SerializerMethodField()
+
+    def get_products_count(self, obj):
+        if hasattr(obj, 'products_count'):
+            return obj.products_count
+        return obj.products.count() if hasattr(obj, 'products') else 0
+
     class Meta:
         model = ProductCategory
         fields = (
@@ -19,10 +26,11 @@ class ProductCategorySerializer(serializers.ModelSerializer):
             'name',
             'slug',
             'description',
+            'products_count',
             'created_at',
-            'updated_at'
+            'updated_at',
         )
-        read_only_fields = ('id', 'created_at', 'updated_at')
+        read_only_fields = ('id', 'products_count', 'created_at', 'updated_at')
         extra_kwargs = {
             'slug': {'required': False}
         }
@@ -31,25 +39,49 @@ class ProductCategorySerializer(serializers.ModelSerializer):
         value = value.strip()
         if not value:
             raise serializers.ValidationError('Category name cannot be empty.')
+        qs = ProductCategory.objects.filter(name__iexact=value)
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError('A category with this name already exists.')
         return value
 
     def validate_slug(self, value):
         value = value.strip().lower()
         if not value:
             raise serializers.ValidationError('Category slug cannot be empty.')
+        qs = ProductCategory.objects.filter(slug=value)
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError('A category with this slug already exists.')
         return value
 
     def create(self, validated_data):
-        name = validated_data['name']
-        base_slug = slugify(name)
-        slug = base_slug
-        counter = 1
-        while ProductCategory.objects.filter(slug=slug).exists():
-            slug = f'{base_slug}-{counter}'
-            counter += 1
-        validated_data['slug'] = slug
+        if not validated_data.get('slug'):
+            name = validated_data['name']
+            base_slug = slugify(name)
+            slug = base_slug
+            counter = 1
+            while ProductCategory.objects.filter(slug=slug).exists():
+                slug = f'{base_slug}-{counter}'
+                counter += 1
+            validated_data['slug'] = slug
 
         return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        name = validated_data.get('name', instance.name)
+        if 'slug' not in validated_data and 'name' in validated_data and validated_data['name'] != instance.name:
+            base_slug = slugify(name)
+            slug = base_slug
+            counter = 1
+            while ProductCategory.objects.filter(slug=slug).exclude(pk=instance.pk).exists():
+                slug = f'{base_slug}-{counter}'
+                counter += 1
+            validated_data['slug'] = slug
+
+        return super().update(instance, validated_data)
 
 
 class ProductVariantSerializer(serializers.ModelSerializer):

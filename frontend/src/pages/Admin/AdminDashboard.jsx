@@ -99,8 +99,8 @@ export default function AdminDashboard() {
       bgColor: "#faf5ff",
       iconColor: "#9333ea",
       subtext: "Product classification tags",
-      link: "/admin/products",
-      linkLabel: "View catalog items",
+      link: "/admin/categories",
+      linkLabel: "Manage categories",
     },
     {
       label: "Product Variants",

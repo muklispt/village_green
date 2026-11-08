@@ -35,14 +35,16 @@ SECRET_KEY = os.getenv('SECRET_KEY')
 
 DEBUG = os.getenv('DEBUG', 'False').lower() in ('true', '1', 't', 'yes')
 
-ALLOWED_HOSTS = [
-    host.strip()
-    for host in os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',')
-    if host.strip()
-]
+ALLOWED_HOSTS = [host.strip()
+                 for host in os.getenv('ALLOWED_HOSTS','127.0.0.1,localhost').split(',')
+                 if host.strip()]
+                 
 CORS_ALLOWED_ORIGINS = [
-    origin.strip()
-    for origin in os.getenv('CORS_ALLOWED_ORIGINS', 'http://localhost:5173,http://localhost:5174,http://127.0.0.1:5173,http://127.0.0.1:5174').split(',')
+     origin.strip()
+    for origin in os.getenv(
+        "CORS_ALLOWED_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173,http://127.0.0.1:5174"
+    ).split(",")
     if origin.strip()
 ]
 
@@ -270,7 +272,7 @@ LOGGING = {
 # This is safe only because CORS_ALLOWED_ORIGINS is an explicit list, never "*".
 CORS_ALLOW_CREDENTIALS = True
 from corsheaders.defaults import default_headers
-CORS_ALLOW_HEADERS = list(default_headers) + ['x-admin-panel']
+CORS_ALLOW_HEADERS = list(default_headers) + ['x-admin-panel', 'idempotency-key']
 
 ADMIN_ACCESS_TOKEN_LIFETIME = timedelta(minutes=10)
 ADMIN_REFRESH_TOKEN_LIFETIME = timedelta(hours=8)
@@ -294,3 +296,9 @@ ORDER_CURRENCY = 'INR'
 ORDER_SHIPPING_FEE = Decimal(os.getenv('ORDER_SHIPPING_FEE', '0'))
 ORDER_FREE_SHIPPING_THRESHOLD = Decimal(os.getenv('ORDER_FREE_SHIPPING_THRESHOLD', '0'))
 ORDER_TAX_RATE_PERCENT = Decimal(os.getenv('ORDER_TAX_RATE_PERCENT', '0'))
+
+# ---- Razorpay Payment Gateway ----
+RAZORPAY_KEY_ID = os.getenv('RAZORPAY_KEY_ID', '').strip()
+RAZORPAY_KEY_SECRET = os.getenv('RAZORPAY_KEY_SECRET', '').strip()
+RAZORPAY_WEBHOOK_SECRET = os.getenv('RAZORPAY_WEBHOOK_SECRET', '').strip()
+RAZORPAY_CURRENCY = os.getenv('RAZORPAY_CURRENCY', 'INR').strip()

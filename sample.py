@@ -1,5 +1,2 @@
-value = '1234@gmail.com'
-
-pattern = value.split('@')[0]
-
-print(pattern)
+import secrets
+print(secrets.token_urlsafe(32))

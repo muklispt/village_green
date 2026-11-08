@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useLocation } from "react-router-dom";
 import { Mail, ArrowRight, Home, ChevronRight, AlertCircle } from "lucide-react";
 import Navbar from "../../components/layout/Navbar";
 import Footer from "../../components/layout/Footer";
@@ -37,12 +37,20 @@ export default function Login() {
     clearFieldError(name);
   };
 
+  const location = useLocation();
+  const searchParams = new URLSearchParams(location.search);
+  const redirectTarget = searchParams.get("redirect") || location.state?.redirect;
+
   const redirectAfterAuth = (userObj, dataObj) => {
     const role = (userObj?.role || dataObj?.user?.role || dataObj?.role || "").toLowerCase();
     if (role === "admin") {
       navigate("/admin/dashboard");
     } else {
-      navigate("/");
+      if (redirectTarget && redirectTarget.startsWith("/") && !redirectTarget.startsWith("//")) {
+        navigate(redirectTarget);
+      } else {
+        navigate("/");
+      }
     }
   };
 
