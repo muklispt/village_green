@@ -77,6 +77,7 @@ INSTALLED_APPS = [
     'adminpanel',
     'cart',
     'orders',
+    'marketing',
 ]
 
 # simple jwt and permmision config 

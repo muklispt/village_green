@@ -50,6 +50,13 @@ class Order(models.Model):
 
     subtotal = models.DecimalField(max_digits=12,decimal_places=2)
     discount_amount = models.DecimalField(max_digits=12,decimal_places=2,default=0)
+    # Snapshots of how discount_amount was made up. Set once at checkout, never recalculated.
+    # discount_amount == offer_discount + coupon_discount.
+    offer_discount = models.DecimalField(max_digits=12,decimal_places=2,default=0)
+    coupon_discount = models.DecimalField(max_digits=12,decimal_places=2,default=0)
+    coupon_code = models.CharField(max_length=30,blank=True,default='')
+    # JSON list of {offer_id, name, discount_type, discount_value, amount} as applied at checkout.
+    applied_offers = models.JSONField(default=list,blank=True)
     shipping_fee = models.DecimalField(max_digits=12,decimal_places=2,default=0)
     tax_amount = models.DecimalField(max_digits=12,decimal_places=2,default=0)
     total_amount = models.DecimalField(max_digits=12,decimal_places=2)
@@ -87,7 +94,16 @@ class Order(models.Model):
                 & Q(shipping_fee__gte=0) & Q(tax_amount__gte=0) & Q(total_amount__gte=0),
                 name='order_amounts_not_negative',
             ),
+              models.CheckConstraint(
+                condition=Q(offer_discount__gte=0) & Q(coupon_discount__gte=0),
+                name='order_discount_parts_not_negative',
+            ),
+            models.CheckConstraint(
+                condition=Q(discount_amount=models.F('offer_discount') + models.F('coupon_discount')),
+                name='order_discount_matches_parts',
+            ),
         ]
+
 
     def __str__(self):
         return self.order_number
