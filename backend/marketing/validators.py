@@ -48,3 +48,25 @@ def validate_date_range(start_date, end_date):
     if start_date and end_date and end_date <= start_date:
         return {'end_date': 'End date must be after the start date.'}
     return {}
+
+
+def offer_target_error(applicable_type, product_count, category_count):
+    """Return why a scope and its links do not fit together, or None when they do.
+
+    Single source of truth for offer target rules. Used by the models, the offer
+    services and the discount engine.
+    """
+    from .models import ApplicableType
+
+    if applicable_type == ApplicableType.ALL_PRODUCTS:
+        if product_count or category_count:
+            return 'A store-wide offer cannot be linked to products or categories.'
+    elif applicable_type == ApplicableType.SPECIFIC_PRODUCTS:
+        if product_count == 0 or category_count:
+            return 'A product offer needs at least one product and no categories.'
+    elif applicable_type == ApplicableType.CATEGORIES:
+        if category_count == 0 or product_count:
+            return 'A category offer needs at least one category and no products.'
+    else:
+        return 'Unknown offer scope.'
+    return None
