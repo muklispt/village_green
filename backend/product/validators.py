@@ -80,3 +80,4 @@ def validate_product_video_file(file):
             raise ValidationError("Invalid WebM file: missing standard EBML header.")
 
     return file
+

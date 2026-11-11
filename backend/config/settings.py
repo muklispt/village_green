@@ -36,14 +36,13 @@ SECRET_KEY = os.getenv('SECRET_KEY')
 DEBUG = os.getenv('DEBUG', 'False').lower() in ('true', '1', 't', 'yes')
 
 ALLOWED_HOSTS = [host.strip()
-                 for host in os.getenv('ALLOWED_HOSTS','127.0.0.1,localhost').split(',')
+                 for host in os.getenv('ALLOWED_HOSTS').split(',')
                  if host.strip()]
                  
 CORS_ALLOWED_ORIGINS = [
      origin.strip()
     for origin in os.getenv(
-        "CORS_ALLOWED_ORIGINS",
-        "http://localhost:5173,http://127.0.0.1:5173,http://127.0.0.1:5174"
+        "CORS_ALLOWED_ORIGINS"
     ).split(",")
     if origin.strip()
 ]

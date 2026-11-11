@@ -25,8 +25,12 @@ def validate_coupon_code(code):
         )
 
 
-def validate_discount_rules(discount_type, discount_value, maximum_discount):
-    """Shared rules for offers and coupons. Returns a dict of field errors."""
+def validate_discount_rules(discount_type, discount_value, maximum_discount, allow_maximum_for_fixed=False):
+    """Shared rules for offers and coupons. Returns a dict of field errors.
+
+    Coupons pass allow_maximum_for_fixed=False (maximum applies only to percentages).
+    Offers pass True: a fixed offer's maximum is an aggregate cap over the order.
+    """
     from .models import DiscountType
 
     errors = {}
@@ -36,7 +40,7 @@ def validate_discount_rules(discount_type, discount_value, maximum_discount):
         errors['discount_value'] = 'A percentage discount cannot exceed 100.'
 
     if maximum_discount is not None:
-        if discount_type != DiscountType.PERCENTAGE:
+        if discount_type != DiscountType.PERCENTAGE and not allow_maximum_for_fixed:
             errors['maximum_discount'] = 'A maximum discount applies only to percentage discounts.'
         elif maximum_discount <= 0:
             errors['maximum_discount'] = 'Maximum discount must be greater than zero.'

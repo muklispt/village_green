@@ -96,17 +96,16 @@ class OfferValidationTests(TestCase):
                                  applicable_type=ApplicableType.ALL_PRODUCTS,
                                  start_date=start, end_date=start)
 
-    def test_maximum_discount_only_for_percentage_and_must_be_positive(self):
-        with self.assertRaises(ValidationError) as ctx:
-            Offer(name='Capped fixed', discount_type=DiscountType.FIXED, discount_value=Decimal('5'),
-                  maximum_discount=Decimal('50'), applicable_type=ApplicableType.ALL_PRODUCTS,
-                  **dict(zip(('start_date', 'end_date'), window()))).clean()
-        self.assertIn('maximum_discount', ctx.exception.message_dict)
+    def test_maximum_discount_must_be_positive_and_is_allowed_on_fixed_offers(self):
+        # Decision A/C: a fixed offer's maximum_discount is an aggregate cap over the order,
+        # so it is valid for offers. Coupons keep the percentage-only rule (tested below).
+        Offer(name='Capped fixed', discount_type=DiscountType.FIXED, discount_value=Decimal('5'),
+              maximum_discount=Decimal('50'), applicable_type=ApplicableType.ALL_PRODUCTS,
+              **dict(zip(('start_date', 'end_date'), window()))).clean()
+        make_offer(discount_type=DiscountType.FIXED, discount_value=Decimal('5'),
+                   maximum_discount=Decimal('50'))
         with self.assertRaises(IntegrityError), transaction.atomic():
             make_offer(maximum_discount=Decimal('0.00'))
-        with self.assertRaises(IntegrityError), transaction.atomic():
-            make_offer(discount_type=DiscountType.FIXED, discount_value=Decimal('5'),
-                       maximum_discount=Decimal('50'))
 
     def test_negative_minimum_order_is_rejected(self):
         with self.assertRaises(IntegrityError), transaction.atomic():

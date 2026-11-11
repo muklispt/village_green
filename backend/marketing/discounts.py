@@ -12,23 +12,31 @@ ORDER OF OPERATIONS
 1. Parse and validate the requested lines (positive whole quantities, no duplicates).
 2. Load products and variants and check they can be bought (same rules as the cart).
 3. Line total = selling price (never MRP) x quantity.
-4. Automatic offers: each line takes its best eligible offer. A line never gets two.
-5. Coupon: at most one. It applies to the subtotal left after automatic offers.
-6. Shipping and tax are not computed here. `taxable_subtotal` is what the existing
-   tax policy should use (tax = (subtotal - discount) x rate, in orders.services).
+4. Automatic offers. Each line takes its single best offer (largest raw discount, ties
+   to the lowest offer id). Percentage offers take a share of the line; fixed offers
+   take discount_value PER UNIT x quantity. Each offer's total over the whole order is
+   capped by its maximum_discount, shared across its lines (see allocate_capped).
+5. Subtotal after automatic offers.
+6. Coupon: at most one, applied to that subtotal (capped by its own maximum and by
+   the eligible subtotal). Coupon rules are unchanged from Phase 2/3.
+7. discounted_subtotal = subtotal - offer_discount - coupon_discount. This is the
+   merchandise subtotal used for the free-shipping threshold (free_shipping_subtotal).
+   Shipping is never discounted. Tax is calculated by the existing policy in orders.
 
 ELIGIBILITY BASE
 Offer minimums and coupon minimums are checked against the original subtotal (all
 lines at selling price, before any discount). This matches the Phase 2 reservation check.
 
 ROUNDING
-Decimal everywhere. Every money amount is rounded to 0.01 with ROUND_HALF_UP, once,
-where it is produced.
+Decimal everywhere. Every money amount is quantized to 0.01 once, where it is produced:
+ROUND_HALF_UP for line and offer amounts (same as the existing tax rounding). Aggregate
+cap allocation uses ROUND_DOWN plus largest-remainder cents, so allocations sum exactly
+to the cap.
 """
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal
 from typing import Optional
 
 from django.utils import timezone
@@ -89,10 +97,24 @@ class DiscountBreakdown:
     coupon_discount: Decimal
     discount_amount: Decimal
     discounted_subtotal: Decimal
-    taxable_subtotal: Decimal
     coupon_code: Optional[str]
     applied_offers: list = field(default_factory=list)
     lines: list = field(default_factory=list)
+
+    @property
+    def free_shipping_subtotal(self):
+        """Merchandise subtotal to compare with ORDER_FREE_SHIPPING_THRESHOLD.
+
+        Decision B: this is the discounted merchandise subtotal, after automatic offers
+        and the coupon. It is the same value as discounted_subtotal, not a second
+        calculation. Shipping itself is never discounted.
+        """
+        return self.discounted_subtotal
+
+    @property
+    def taxable_subtotal(self):
+        """Base for tax. Same value as discounted_subtotal; tax policy stays in orders."""
+        return self.discounted_subtotal
 
     def to_dict(self):
         """JSON-ready form. Money is a decimal string. No customer or usage data."""
@@ -102,6 +124,7 @@ class DiscountBreakdown:
             'coupon_discount': str(self.coupon_discount),
             'discount_amount': str(self.discount_amount),
             'discounted_subtotal': str(self.discounted_subtotal),
+            'free_shipping_subtotal': str(self.free_shipping_subtotal),
             'taxable_subtotal': str(self.taxable_subtotal),
             'coupon_code': self.coupon_code,
             'applied_offers': [
@@ -240,12 +263,71 @@ def _offer_applies_to(offer, line, category_id, offer_product_ids, offer_categor
     return False
 
 
-def _apply_automatic_offers(lines, category_by_product, subtotal, now):
-    """Give each line its best eligible offer. Mutates `lines`. Returns the applied list.
+def _line_raw_discount(offer, line):
+    """What `offer` would take off this line on its own, before any order-wide cap.
 
-    Per line, the offer with the largest discount wins. Ties go to the lowest offer id.
-    An offer's maximum_discount is a cap across the whole order. Lines are processed
-    in a fixed order, so the same cart always gives the same result.
+    Percentage: share of the line total.
+    Fixed: discount_value PER UNIT, multiplied by the line quantity (all units are eligible).
+    Either way it is never more than the line total, and it is always from the selling price.
+    """
+    if offer.discount_type == DiscountType.PERCENTAGE:
+        raw = money(line.line_total * offer.discount_value / HUNDRED)
+    else:
+        raw = money(offer.discount_value * line.quantity)
+    return min(raw, line.line_total)
+
+
+def allocate_capped(raw_amounts, cap):
+    """Share one aggregate cap across several raw line discounts. Pure function.
+
+    Input: raw amounts already at cent precision, in a fixed order, each > 0.
+    Output: one allocation per input, same order, with these guarantees:
+      - if the total is within the cap, the raw amounts are returned unchanged;
+      - otherwise the allocations sum to exactly the cap (no money created or lost);
+      - every allocation is at most its raw amount (line never gets more than it asked for).
+
+    Method (largest remainder): each line gets floor(cap * raw / total) to the cent.
+    The leftover cents go one at a time to the lines with the largest fractional
+    remainder, ties going to the earlier line. Since cap < total, each floor is below
+    its raw amount, so adding one cent cannot exceed it.
+    """
+    total = sum(raw_amounts, ZERO)
+    if cap is None or total <= cap:
+        return list(raw_amounts)
+    cap = money(cap)
+    if cap <= 0:
+        return [ZERO for _ in raw_amounts]
+
+    exact = [cap * raw / total for raw in raw_amounts]
+    floors = [share.quantize(MONEY, rounding=ROUND_DOWN) for share in exact]
+    leftover_cents = int((cap - sum(floors, ZERO)) / MONEY)
+    by_remainder = sorted(range(len(exact)), key=lambda i: (-(exact[i] - floors[i]), i))
+
+    result = list(floors)
+    for index in by_remainder[:leftover_cents]:
+        result[index] += MONEY
+
+    # Internal guard. These cannot fail for valid input, but money must never drift.
+    if sum(result, ZERO) != cap or any(a > r for a, r in zip(result, raw_amounts)):
+        raise OfferConfigurationError('Aggregate offer allocation failed its own checks.')
+    return result
+
+
+def _apply_automatic_offers(lines, category_by_product, subtotal, now):
+    """Pick the best offer for each line, then apply each offer's aggregate cap.
+
+    Steps:
+    1. Eligible offers: active, in their window, minimum met on the gross subtotal.
+    2. Per line: compute every matching offer's raw discount (uncapped). The largest
+       raw discount wins; ties go to the lowest offer id. Each line gets one offer.
+       Selection uses raw amounts on purpose: the cap depends on which lines an offer
+       wins, so using capped amounts here would be circular.
+    3. Per offer: its lines' raw discounts are summed and, if the sum exceeds the
+       offer's maximum_discount, shared out by allocate_capped(). The cap is shared
+       across the whole order, not applied to each line.
+
+    Mutates `lines` (offer_id, offer_discount). Returns the applied offers, one entry
+    per offer, sorted by id. Each entry's amount equals the sum of its line allocations.
     """
     offers = list(
         Offer.objects.filter(is_active=True, start_date__lte=now, end_date__gte=now)
@@ -253,6 +335,7 @@ def _apply_automatic_offers(lines, category_by_product, subtotal, now):
     )
     offers.sort(key=lambda offer: str(offer.id))
     eligible = [offer for offer in offers if subtotal >= offer.minimum_order_amount]
+    names = {offer.id: offer.name for offer in eligible}
 
     scope = {
         offer.id: (
@@ -261,43 +344,42 @@ def _apply_automatic_offers(lines, category_by_product, subtotal, now):
         )
         for offer in eligible
     }
-    used_by_offer = defaultdict(lambda: ZERO)
 
-    for line in lines:      # already sorted by product id, so this order is deterministic
+    # Step 2: choose one offer per line, by raw per-line discount.
+    chosen = defaultdict(list)          # offer id -> [(line, raw)], in line order
+    for line in lines:                  # lines are already in deterministic order
         category_id = category_by_product[line.product_id]
         candidates = []
         for offer in eligible:
             product_ids, category_ids = scope[offer.id]
             if not _offer_applies_to(offer, line, category_id, product_ids, category_ids):
                 continue
-            if offer.discount_type != DiscountType.PERCENTAGE:
-                raise OfferConfigurationError(
-                    f'Offer {offer.id} is a fixed-amount offer, which is not priced yet.'
-                )
-            amount = money(line.line_total * offer.discount_value / HUNDRED)
-            if offer.maximum_discount is not None:
-                amount = min(amount, offer.maximum_discount - used_by_offer[offer.id])
-            if amount > 0:
-                candidates.append((amount, offer))
+            raw = _line_raw_discount(offer, line)
+            if raw > 0:
+                candidates.append((raw, offer))
+        if candidates:
+            raw, offer = min(candidates, key=lambda c: (-c[0], str(c[1].id)))
+            chosen[offer.id].append((line, raw))
 
-        if not candidates:
+    # Step 3: apply each offer's aggregate cap across its own lines.
+    applied = []
+    for offer in eligible:
+        rows = chosen.get(offer.id)
+        if not rows:
             continue
-        amount, offer = min(candidates, key=lambda c: (-c[0], str(c[1].id)))
-        if amount > line.line_total:
-            raise OfferConfigurationError('An offer discount exceeded its line total.')
-        line.offer_id = offer.id
-        line.offer_discount = amount
-        used_by_offer[offer.id] += amount
-
-    totals = {}
-    names = {offer.id: offer.name for offer in eligible}
-    for line in lines:
-        if line.offer_id is not None:
-            totals[line.offer_id] = totals.get(line.offer_id, ZERO) + line.offer_discount
-    return [
-        AppliedOffer(offer_id=offer_id, offer_name=names[offer_id], discount_amount=money(total))
-        for offer_id, total in sorted(totals.items(), key=lambda item: str(item[0]))
-    ]
+        raws = [raw for _, raw in rows]
+        allocations = allocate_capped(raws, offer.maximum_discount)
+        for (line, _), amount in zip(rows, allocations):
+            if amount > line.line_total:
+                raise OfferConfigurationError('An offer discount exceeded its line total.')
+            line.offer_id = offer.id
+            line.offer_discount = amount
+        applied.append(AppliedOffer(
+            offer_id=offer.id,
+            offer_name=names[offer.id],
+            discount_amount=money(sum(allocations, ZERO)),
+        ))
+    return applied
 
 
 # ------------------------------------------------------------------ coupon
@@ -412,7 +494,6 @@ def calculate_discounts(*, customer, items, coupon_code=None, order=None, now=No
         coupon_discount=coupon_discount,
         discount_amount=discount_amount,
         discounted_subtotal=discounted,
-        taxable_subtotal=discounted,
         coupon_code=coupon.code if coupon else None,
         applied_offers=applied_offers,
         lines=lines,

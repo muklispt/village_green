@@ -13,48 +13,48 @@ import uuid
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
-from django.db.models import F,Q
+from django.db.models import F, Q
 from django.utils import timezone
 
-from .validators import (COUPON_CODE_REGEX, normalize_coupon_code, validate_coupon_code,
-                         validate_date_range, validate_discount_rules)
-# Create your models here.
+from .validators import (COUPON_CODE_REGEX, normalize_coupon_code, offer_target_error,
+                         validate_coupon_code, validate_date_range, validate_discount_rules)
+
 
 class DiscountType(models.TextChoices):
-    PERCENTAGE = 'percentage','Percentage'
-    FIXED = 'fixed','Fixed amount'
+    PERCENTAGE = 'percentage', 'Percentage'
+    FIXED = 'fixed', 'Fixed amount'
 
 
 class ApplicableType(models.TextChoices):
-    ALL_PRODUCTS = 'all_products','Store-wide'
-    SPECIFIC_PRODUCTS = 'specific_products','Specific products'
-    CATEGORIES = 'categories','Categories'
+    ALL_PRODUCTS = 'all_products', 'Store-wide'
+    SPECIFIC_PRODUCTS = 'specific_products', 'Specific products'
+    CATEGORIES = 'categories', 'Categories'
 
 
 class CouponUsageStatus(models.TextChoices):
     RESERVED = 'reserved', 'Reserved'      # counts against limits
-    RELEASED = 'released', 'Released' 
+    RELEASED = 'released', 'Released'      # order cancelled or expired; kept for audit
 
 
 class Offer(models.Model):
     """A promotional discount on selling prices. Applies automatically, no code."""
 
-    id = models.UUIDField(primary_key=True,default=uuid.uuid4,editable=False)
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=150)
-    description = models.TextField(blank=True,default='')
-    discount_type = models.CharField(max_length=20,choices=DiscountType.choices)
-    discount_value = models.DecimalField(max_digits=12,decimal_places=2)
-    applicable_type = models.CharField(max_length=20,choices=ApplicableType.choices)
+    description = models.TextField(blank=True, default='')
+    discount_type = models.CharField(max_length=20, choices=DiscountType.choices)
+    discount_value = models.DecimalField(max_digits=12, decimal_places=2)
+    applicable_type = models.CharField(max_length=20, choices=ApplicableType.choices)
     products = models.ManyToManyField(
-        'product.Product',through='OfferProduct',related_name='offers',blank=True,
+        'product.Product', through='OfferProduct', related_name='offers', blank=True,
     )
     categories = models.ManyToManyField(
-        'product.ProductCategory',through='OfferCategory',related_name='offers',blank=True
+        'product.ProductCategory', through='OfferCategory', related_name='offers', blank=True,
     )
     # Cart subtotal (before shipping/tax) the customer must reach for the offer to apply.
     minimum_order_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
-    # Cap for percentage offers. Null means no cap
-    maximum_discount = models.DecimalField(max_digits=12,decimal_places=2,null=True,blank=True)
+    # Cap for percentage offers. Null means no cap.
+    maximum_discount = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
     start_date = models.DateTimeField()
     end_date = models.DateTimeField()
     is_active = models.BooleanField(default=True)
@@ -69,7 +69,7 @@ class Offer(models.Model):
         db_table = 'marketing_offer'
         ordering = ['-created_at']
         indexes = [
-            models.Index(fields=['is_active','end_date']),
+            models.Index(fields=['is_active', 'end_date']),
             models.Index(fields=['applicable_type']),
         ]
         constraints = [
@@ -90,18 +90,16 @@ class Offer(models.Model):
                 condition=Q(maximum_discount__isnull=True) | Q(maximum_discount__gt=0),
                 name='offer_maximum_discount_positive',
             ),
-            models.CheckConstraint(
-                condition=Q(maximum_discount__isnull=True)
-                | Q(discount_type=DiscountType.PERCENTAGE),
-                name='offer_maximum_only_for_percentage',
-            ),
         ]
 
     def __str__(self):
-      return self.name
+        return self.name
 
     def clean(self):
-        errors = validate_discount_rules(self.discount_type, self.discount_value, self.maximum_discount)
+        errors = validate_discount_rules(
+            self.discount_type, self.discount_value, self.maximum_discount,
+            allow_maximum_for_fixed=True,
+        )
         errors.update(validate_date_range(self.start_date, self.end_date))
         if self.minimum_order_amount is not None and self.minimum_order_amount < 0:
             errors['minimum_order_amount'] = 'Minimum order amount cannot be negative.'
@@ -116,46 +114,35 @@ class Offer(models.Model):
         # `id` has a default, so pk is set before the first save. Check _state instead.
         if self._state.adding:
             raise ValidationError({'applicable_type': 'Save the offer before linking products or categories.'})
-        has_products = self.offer_products.exists()
-        has_categories = self.offer_categories.exists()
-
-        if self.applicable_type == ApplicableType.ALL_PRODUCTS:
-            if has_products or has_categories:
-                raise ValidationError(
-                    {'applicable_type': 'A store-wide offer cannot be linked to products or categories.'}
-                )
-        elif self.applicable_type == ApplicableType.SPECIFIC_PRODUCTS:
-            if not has_products or has_categories:
-                raise ValidationError(
-                    {'applicable_type': 'A product offer needs at least one product and no categories.'}
-                )
-        elif self.applicable_type == ApplicableType.CATEGORIES:
-            if not has_categories or has_products:
-                raise ValidationError(
-                    {'applicable_type': 'A category offer needs at least one category and no products.'}
-                )
+        message = offer_target_error(
+            self.applicable_type,
+            self.offer_products.count(),
+            self.offer_categories.count(),
+        )
+        if message:
+            raise ValidationError({'applicable_type': message})
 
     def is_live(self, now=None):
         """True when the offer is active and `now` is inside its window."""
         now = now or timezone.now()
         return self.is_active and self.start_date <= now <= self.end_date
-    
-        
+
+
 class OfferProduct(models.Model):
-    id = models.UUIDField(primary_key=True,default=uuid.uuid4,editable=False)
-    offer = models.ForeignKey(Offer,on_delete=models.CASCADE,related_name='offer_products')
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    offer = models.ForeignKey(Offer, on_delete=models.CASCADE, related_name='offer_products')
     product = models.ForeignKey(
-        'product.Product', on_delete=models.CASCADE,related_name='offer_product_links',
+        'product.Product', on_delete=models.CASCADE, related_name='offer_product_links',
     )
 
     class Meta:
         db_table = 'marketing_offer_product'
         constraints = [
-            models.UniqueConstraint(fields=['offer','product'],name='unique_offer_product'),
+            models.UniqueConstraint(fields=['offer', 'product'], name='unique_offer_product'),
         ]
 
     def __str__(self):
-        return f'{self.offer} -> {self.product}' 
+        return f'{self.offer} -> {self.product}'
 
 
 class OfferCategory(models.Model):

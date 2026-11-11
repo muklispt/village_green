@@ -110,12 +110,16 @@ class CreateOfferTests(OfferServiceBase):
                 product_ids=['not-a-uuid'],
             )
 
-    def test_fixed_offer_is_refused(self):
-        with self.assertRaises(ValidationError) as ctx:
-            create_offer(fields=self.fields(discount_type=DiscountType.FIXED,
-                                            discount_value=Decimal('5')))
-        self.assertIn('discount_type', ctx.exception.detail)
-        self.assertFalse(Offer.objects.exists())
+    def test_fixed_offer_is_created_through_the_service(self):
+        offer = create_offer(
+            fields=self.fields(applicable_type=ApplicableType.SPECIFIC_PRODUCTS,
+                               discount_type=DiscountType.FIXED, discount_value=Decimal('20'),
+                               maximum_discount=Decimal('100')),
+            product_ids=[self.rice.pk],
+        )
+        self.assertEqual(offer.discount_type, DiscountType.FIXED)
+        self.assertEqual(offer.maximum_discount, Decimal('100.00'))
+        self.assertEqual(offer.offer_products.count(), 1)
 
     def test_percentage_over_one_hundred_is_refused(self):
         with self.assertRaises(ValidationError):
@@ -193,12 +197,26 @@ class UpdateOfferTests(OfferServiceBase):
         self.assertEqual(offer.discount_value, Decimal('10.00'))
         self.assertEqual(offer.offer_products.count(), 1)
 
-    def test_cannot_switch_an_existing_offer_to_fixed(self):
+    def test_offer_can_be_switched_to_fixed_through_the_service(self):
+        offer = create_offer(fields=self.fields())
+        update_offer(offer, fields={'discount_type': DiscountType.FIXED, 'discount_value': Decimal('5')})
+        offer.refresh_from_db()
+        self.assertEqual(offer.discount_type, DiscountType.FIXED)
+        self.assertEqual(offer.discount_value, Decimal('5.00'))
+
+    def test_fixed_offer_maximum_can_be_set_and_changed_through_the_service(self):
+        offer = create_offer(fields=self.fields(discount_type=DiscountType.FIXED,
+                                                discount_value=Decimal('5')))
+        update_offer(offer, fields={'maximum_discount': Decimal('40')})
+        offer.refresh_from_db()
+        self.assertEqual(offer.maximum_discount, Decimal('40.00'))
+
+    def test_percentage_offer_cannot_be_switched_to_a_zero_maximum(self):
         offer = create_offer(fields=self.fields())
         with self.assertRaises(ValidationError):
-            update_offer(offer, fields={'discount_type': DiscountType.FIXED})
+            update_offer(offer, fields={'maximum_discount': Decimal('0')})
         offer.refresh_from_db()
-        self.assertEqual(offer.discount_type, DiscountType.PERCENTAGE)
+        self.assertIsNone(offer.maximum_discount)
 
     def test_existing_fixed_offer_can_still_be_disabled(self):
         offer = make_offer(discount_type=DiscountType.FIXED, discount_value=Decimal('5'))
@@ -228,3 +246,20 @@ class ServiceOutputFeedsEngineTests(OfferServiceBase):
             items=[{'product_id': str(self.rice.pk), 'quantity': 2}],
         )
         self.assertEqual(result.offer_discount, Decimal('12.00'))
+
+    def test_fixed_offer_created_through_service_is_priced_per_unit(self):
+        offer = create_offer(fields=self.fields(discount_type=DiscountType.FIXED,
+                                                discount_value=Decimal('20')))
+        result = calculate_discounts(customer=self.admin,
+                                     items=[{'product_id': str(self.turmeric.pk), 'quantity': 3}])
+        self.assertEqual(result.offer_discount, Decimal('60.00'))
+        self.assertEqual(result.applied_offers[0].offer_id, offer.pk)
+
+    def test_fixed_offer_updated_through_service_is_priced_per_unit(self):
+        offer = create_offer(fields=self.fields())
+        update_offer(offer, fields={'discount_type': DiscountType.FIXED,
+                                    'discount_value': Decimal('20'),
+                                    'maximum_discount': Decimal('50')})
+        result = calculate_discounts(customer=self.admin,
+                                     items=[{'product_id': str(self.turmeric.pk), 'quantity': 3}])
+        self.assertEqual(result.offer_discount, Decimal('50.00'))   # raw 60 capped at 50

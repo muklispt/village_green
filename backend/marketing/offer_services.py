@@ -14,17 +14,12 @@ from rest_framework.exceptions import ValidationError
 
 from product.models import Product, ProductCategory
 
-from .models import DiscountType, Offer, OfferCategory, OfferProduct
+from .models import Offer, OfferCategory, OfferProduct
 from .validators import offer_target_error
 
 OFFER_FIELDS = (
     'name', 'description', 'discount_type', 'discount_value', 'applicable_type',
     'minimum_order_amount', 'maximum_discount', 'start_date', 'end_date', 'is_active',
-)
-
-FIXED_NOT_SUPPORTED = (
-    'Fixed-amount offers are not supported yet. It is not decided whether the amount '
-    'applies per unit or per line.'
 )
 
 
@@ -64,11 +59,6 @@ def _validate(offer, product_ids, category_ids):
     _check_links_exist(product_ids, category_ids)
 
 
-def _reject_fixed(discount_type):
-    if discount_type == DiscountType.FIXED:
-        raise ValidationError({'discount_type': [FIXED_NOT_SUPPORTED]})
-
-
 def _sync_links(offer, product_ids, category_ids):
     """Make the link rows equal the given sets. Keeps rows that are still wanted."""
     if product_ids is not None:
@@ -88,7 +78,6 @@ def _sync_links(offer, product_ids, category_ids):
 def create_offer(*, fields, product_ids=(), category_ids=(), created_by=None):
     """Create an offer with its links, all or nothing. Returns the saved Offer."""
     data = {key: value for key, value in fields.items() if key in OFFER_FIELDS}
-    _reject_fixed(data.get('discount_type'))
 
     products = _parse_ids(product_ids, 'product_ids')
     categories = _parse_ids(category_ids, 'category_ids')
@@ -107,11 +96,6 @@ def update_offer(offer, *, fields, product_ids=None, category_ids=None):
 
     with transaction.atomic():
         locked = Offer.objects.select_for_update().get(pk=offer.pk)
-
-        # Switching an offer to fixed is refused. Editing or disabling an existing
-        # fixed offer stays allowed, so it can be switched off.
-        if 'discount_type' in data and data['discount_type'] != locked.discount_type:
-            _reject_fixed(data['discount_type'])
 
         for key, value in data.items():
             setattr(locked, key, value)
